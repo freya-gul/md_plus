@@ -462,7 +462,7 @@ function GestationalRuler({ phase, weekOrDay, alerts = [] }) {
           <div key={idx} title={a.note} style={{ position: "absolute", left: `${a.pct}%`, top: -6, width: 3, height: 22, background: TIER_COLOR[a.tier], borderRadius: 2 }} />
         ))}
         <div style={{
-          position: "absolute", left: `calc(${posPct}% - 9px)`, top: -9, width: 18, height: 18,
+          position: "absolute", left: `calc(${posPct}% - 9px)`, top: -4, width: 18, height: 18,
           borderRadius: "50%", background: "#2F6E68", border: "3px solid #F4F6F1", boxShadow: "0 0 0 2px #2F6E68"
         }} />
       </div>
