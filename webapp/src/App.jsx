@@ -1265,19 +1265,10 @@ function buildVisitSummary(patient, checkins, reasons) {
   return lines.join("\n");
 }
 
-function PatientDetail({ patient, checkins, onClose }) {
-  const bpData = checkins.filter((c) => c.bp).map((c) => ({ date: fmtDate(c.date), sys: c.bp.sys, dia: c.bp.dia }));
-  const reasons = computePatientReasons(patient, checkins);
+function VisitSummaryModal({ summary, onClose }) {
   const [copied, setCopied] = useState(false);
 
-  const weights = checkins.filter((c) => c.weight != null).map((c) => c.weight);
-  const weightNow = weights[weights.length - 1];
-  const weightPrev = weights[weights.length - 2];
-  const woundPhotos = checkins.filter((c) => c.wound?.photo).map((c) => ({ date: c.date, photo: c.wound.photo }));
-  const latestWoundPhoto = woundPhotos[woundPhotos.length - 1];
-
   async function copySummary() {
-    const summary = buildVisitSummary(patient, checkins, reasons);
     try {
       await navigator.clipboard.writeText(summary);
       setCopied(true);
@@ -1288,6 +1279,42 @@ function PatientDetail({ patient, checkins, onClose }) {
   }
 
   return (
+    <div style={overlayStyle}>
+      <Card style={{ maxWidth: 560, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+        <SectionTitle icon={<ClipboardList size={16} />} title="Visit summary" />
+        <pre
+          style={{
+            marginTop: 12, padding: 12, background: "#f9f9f7", border: "1px solid #e7ece7", borderRadius: 10,
+            fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, lineHeight: 1.5, color: "#14231F",
+            whiteSpace: "pre-wrap", wordBreak: "break-word", overflowY: "auto", flex: 1,
+          }}
+        >
+          {summary}
+        </pre>
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <button onClick={onClose} style={{ border: "none", background: "none", color: "#5b6b64", fontSize: 13, cursor: "pointer" }}>Close</button>
+          <button onClick={copySummary} style={{ ...primaryBtn, flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            <ClipboardList size={13} /> {copied ? "Copied ✓" : "Copy to clipboard"}
+          </button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function PatientDetail({ patient, checkins, onClose }) {
+  const bpData = checkins.filter((c) => c.bp).map((c) => ({ date: fmtDate(c.date), sys: c.bp.sys, dia: c.bp.dia }));
+  const reasons = computePatientReasons(patient, checkins);
+  const [showSummary, setShowSummary] = useState(false);
+
+  const weights = checkins.filter((c) => c.weight != null).map((c) => c.weight);
+  const weightNow = weights[weights.length - 1];
+  const weightPrev = weights[weights.length - 2];
+  const woundPhotos = checkins.filter((c) => c.wound?.photo).map((c) => ({ date: c.date, photo: c.wound.photo }));
+  const latestWoundPhoto = woundPhotos[woundPhotos.length - 1];
+
+  return (
+    <>
     <div style={{ flex: 1 }}>
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -1325,10 +1352,10 @@ function PatientDetail({ patient, checkins, onClose }) {
               <ArrowLeft size={14} /> Close
             </button>
             <button
-              onClick={copySummary}
+              onClick={() => setShowSummary(true)}
               style={{ ...primaryBtn, background: "#fff", color: "#2F6E68", border: "1px solid #2F6E68", padding: "6px 12px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
             >
-              <ClipboardList size={13} /> {copied ? "Copied ✓" : "Copy visit summary"}
+              <ClipboardList size={13} /> View visit summary
             </button>
           </div>
         </div>
@@ -1408,6 +1435,10 @@ function PatientDetail({ patient, checkins, onClose }) {
         </Card>
       )}
     </div>
+    {showSummary && (
+      <VisitSummaryModal summary={buildVisitSummary(patient, checkins, reasons)} onClose={() => setShowSummary(false)} />
+    )}
+    </>
   );
 }
 
