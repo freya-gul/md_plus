@@ -277,9 +277,12 @@ function supplementReminders(nutrition, patient) {
    evalNutrition() (above) is a deterministic keyword/diff check — cheap,
    always available, but "did the wording change" isn't the same as "is
    this actually concerning." The API route asks Claude to read the diet
-   description and judge clinical relevance; its tier is combined with the
-   keyword tier (worst-of) so the AI call is additive, never a single point
-   of failure — if the call fails, the keyword result still applies.
+   description and judge clinical relevance. Once the AI has weighed in,
+   its tier is authoritative — it replaces the keyword check rather than
+   being combined with it, since a harmless wording change shouldn't keep
+   a diet flagged just because the diff-check caught it. The keyword
+   check only drives the tier before the AI has reviewed this diet (not
+   yet asked, or the call failed) — a starting signal, not a veto.
 ------------------------------------------------------------------------- */
 async function evalNutritionAI({ current, previous, patient }) {
   try {
@@ -309,14 +312,7 @@ async function evalNutritionAI({ current, previous, patient }) {
 }
 
 function mergeNutritionAssessment(keywordResult, aiResult) {
-  if (!aiResult) return keywordResult;
-  if (!keywordResult) return aiResult;
-  return {
-    tier: worstTier([keywordResult.tier, aiResult.tier]),
-    note: aiResult.note,
-    providerNote: aiResult.providerNote,
-    source: aiResult.source,
-  };
+  return aiResult || keywordResult;
 }
 
 /* ---------- EPDS (Edinburgh Postnatal Depression Scale, 10 items) ----------
