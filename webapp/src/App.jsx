@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   Heart, AlertTriangle, CheckCircle2, Camera, Activity, Baby,
   ChevronRight, ArrowLeft, TrendingUp, Moon, Utensils, Stethoscope,
@@ -1279,15 +1279,72 @@ function ProviderView({ patients, checkins, onSwitch, onAddPatient }) {
   );
 }
 
+/* ---------- clinician-facing visit summary ----------
+   Compiles the same flagged reasons/PMH/vitals the dashboard already
+   computes into an EHR-ready note, so a provider can document a chart
+   review in one paste instead of re-reading the full check-in history.
+------------------------------------------------------------------------- */
+function buildVisitSummary(patient, checkins, reasons) {
+  const lines = [];
+  lines.push(`Visit summary — ${patient.name}`);
+  lines.push(`Generated ${fmtDate(dayISO(TODAY))} from Continuum patient-reported check-ins`);
+  lines.push(
+    patient.phase === "pre-term"
+      ? `Week ${patient.weekOrDay} of pregnancy`
+      : `Day ${patient.weekOrDay} postpartum${patient.deliveryType ? ` (${patient.deliveryType} delivery)` : ""}`
+  );
+
+  const pmh = [];
+  if (patient.htnHistory) pmh.push("hypertension");
+  if (patient.vteHistory) pmh.push("prior VTE");
+  if (patient.psychHistory) pmh.push("prior psychiatric history");
+  if (pmh.length) lines.push(`PMH: ${pmh.join(", ")}`);
+  if (patient.otherDiagnoses) lines.push(`Other diagnoses (intake): ${patient.otherDiagnoses}`);
+
+  const bpEntries = checkins.filter((c) => c.bp);
+  const lastBp = bpEntries[bpEntries.length - 1];
+  if (lastBp) lines.push(`Last BP: ${lastBp.bp.sys}/${lastBp.bp.dia} (${fmtDate(lastBp.date)})`);
+
+  const weights = checkins.filter((c) => c.weight != null).map((c) => c.weight);
+  if (weights.length) {
+    const w = weights[weights.length - 1];
+    const prev = weights[weights.length - 2];
+    lines.push(`Weight: ${w} lbs${prev != null ? ` (${w - prev >= 0 ? "+" : ""}${(w - prev).toFixed(1)} since last check-in)` : ""}`);
+  }
+
+  lines.push("");
+  if (reasons.length) {
+    lines.push(`Flagged items (${reasons.length}):`);
+    reasons.forEach((r) => {
+      lines.push(`- [${TIER_LABEL[r.tier].toUpperCase()}] ${r.label}: ${r.providerNote || r.note} (Source: ${r.source})`);
+    });
+  } else {
+    lines.push("No flagged items — all patient-reported check-ins within expected range.");
+  }
+  return lines.join("\n");
+}
+
 function PatientDetail({ patient, checkins, onClose }) {
   const bpData = checkins.filter((c) => c.bp).map((c) => ({ date: fmtDate(c.date), sys: c.bp.sys, dia: c.bp.dia }));
   const reasons = computePatientReasons(patient, checkins);
+  const [copied, setCopied] = useState(false);
 
   const weights = checkins.filter((c) => c.weight != null).map((c) => c.weight);
   const weightNow = weights[weights.length - 1];
   const weightPrev = weights[weights.length - 2];
   const woundPhotos = checkins.filter((c) => c.wound?.photo).map((c) => ({ date: c.date, photo: c.wound.photo }));
   const latestWoundPhoto = woundPhotos[woundPhotos.length - 1];
+
+  async function copySummary() {
+    const summary = buildVisitSummary(patient, checkins, reasons);
+    try {
+      await navigator.clipboard.writeText(summary);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2200);
+    } catch (e) {
+      console.error("Copy visit summary failed:", e);
+    }
+  }
 
   return (
     <div style={{ flex: 1 }}>
@@ -1322,9 +1379,17 @@ function PatientDetail({ patient, checkins, onClose }) {
               </div>
             )}
           </div>
-          <button onClick={onClose} style={{ border: "none", background: "none", color: "#5b6b64", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}>
-            <ArrowLeft size={14} /> Close
-          </button>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+            <button onClick={onClose} style={{ border: "none", background: "none", color: "#5b6b64", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}>
+              <ArrowLeft size={14} /> Close
+            </button>
+            <button
+              onClick={copySummary}
+              style={{ ...primaryBtn, background: "#fff", color: "#2F6E68", border: "1px solid #2F6E68", padding: "6px 12px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
+            >
+              <ClipboardList size={13} /> {copied ? "Copied ✓" : "Copy visit summary"}
+            </button>
+          </div>
         </div>
         <div style={{ marginTop: 14 }}>
           <GestationalRuler phase={patient.phase} weekOrDay={patient.weekOrDay} />
@@ -1442,20 +1507,26 @@ function EducationChat({ subject }) {
   const [input, setInput] = useState("");
   const [thread, setThread] = useState([]);
   const [status, setStatus] = useState("idle"); // idle | loading | error
+  const threadEndRef = useRef(null);
 
-  async function send() {
-    const question = input.trim();
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [thread.length]);
+
+  async function ask(question) {
     if (!question || status === "loading") return;
     setInput("");
     setStatus("loading");
+    setThread((t) => [...t, { question, pending: true }]);
     const result = await askEducation(subject.key, question);
-    if (result.error) {
-      setThread((t) => [...t, { question, error: result.error }]);
-      setStatus("error");
-    } else {
-      setThread((t) => [...t, { question, answer: result.answer, onTopic: result.onTopic }]);
-      setStatus("idle");
-    }
+    setThread((t) => {
+      const next = [...t];
+      next[next.length - 1] = result.error
+        ? { question, error: result.error }
+        : { question, answer: result.answer, onTopic: result.onTopic };
+      return next;
+    });
+    setStatus(result.error ? "error" : "idle");
   }
 
   return (
@@ -1468,12 +1539,36 @@ function EducationChat({ subject }) {
         Answers are drawn only from ACOG and other validated guidelines, and are limited to this topic — for anything specific to you, contact your care team.
       </div>
 
+      {thread.length === 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11.5, color: "#8a9791", marginBottom: 6 }}>Suggested questions</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {subject.faqs.slice(0, 3).map((f, i) => (
+              <button
+                key={i}
+                onClick={() => ask(f.q)}
+                style={{
+                  padding: "6px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer", textAlign: "left",
+                  border: "1px solid #d8e0d9", background: "#fff", color: "#2F6E68", fontFamily: "Inter, sans-serif",
+                }}
+              >
+                {f.q}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {thread.length > 0 && (
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
           {thread.map((t, i) => (
             <div key={i}>
               <div style={{ fontSize: 13, fontWeight: 600, color: "#14231F" }}>{t.question}</div>
-              {t.error ? (
+              {t.pending ? (
+                <div style={{ fontSize: 13, color: "#8a9791", marginTop: 4, padding: "9px 12px", borderRadius: 10, background: "#f9f9f7", border: "1px solid #e7ece7", fontStyle: "italic" }}>
+                  Thinking…
+                </div>
+              ) : t.error ? (
                 <div style={{ fontSize: 12.5, color: "#B23A2E", marginTop: 4 }}>{t.error}</div>
               ) : (
                 <div style={{
@@ -1485,6 +1580,7 @@ function EducationChat({ subject }) {
               )}
             </div>
           ))}
+          <div ref={threadEndRef} />
         </div>
       )}
 
@@ -1492,12 +1588,12 @@ function EducationChat({ subject }) {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") send(); }}
+          onKeyDown={(e) => { if (e.key === "Enter") ask(input.trim()); }}
           placeholder={`Ask a question about ${subject.label.toLowerCase()}...`}
           style={{ ...inputStyle, width: "100%", fontFamily: "Inter, sans-serif" }}
         />
         <button
-          onClick={send}
+          onClick={() => ask(input.trim())}
           disabled={status === "loading" || !input.trim()}
           style={{ ...primaryBtn, padding: "0 14px", opacity: status === "loading" || !input.trim() ? 0.6 : 1, display: "flex", alignItems: "center" }}
         >
