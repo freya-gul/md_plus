@@ -908,51 +908,70 @@ function EPDSScreening({ patient, existingEpds, onComplete, onCancel }) {
   );
 }
 
+/* ---------- shared: what flagged this patient, and why ----------
+   Each category looks back through check-in history for its own most
+   recent relevant entry (not just whatever the last check-in happened to
+   contain) so a later, unrelated check-in never silently drops an earlier
+   elevated reading. Used by both the dashboard row list and the detail panel.
+------------------------------------------------------------------------- */
+function computePatientReasons(patient, cIns) {
+  const reasons = [];
+
+  const bpHistory = cIns.filter((c) => c.bp).map((c) => ({ date: c.date, sys: c.bp.sys, dia: c.bp.dia }));
+  const bpRelevant = cIns.filter((c) => c.bp || c.symptoms?.length);
+  const latestBpEntry = bpRelevant[bpRelevant.length - 1];
+  if (latestBpEntry) {
+    const bpVal = latestBpEntry.bp ? { sys: latestBpEntry.bp.sys, dia: latestBpEntry.bp.dia } : null;
+    const pre = evalPreeclampsia(bpVal, latestBpEntry.symptoms || [], { weekOrDay: patient.weekOrDay, phase: patient.phase });
+    if (pre && pre.tier !== "normal") reasons.push({ label: "Blood pressure / pre-eclampsia risk", ...pre });
+  }
+  const trend = evalBPTrend(bpHistory);
+  if (trend) reasons.push({ label: "Blood pressure trend", ...trend });
+
+  const kickEntries = cIns.filter((c) => c.kickCount != null);
+  const latestKick = kickEntries[kickEntries.length - 1];
+  if (latestKick) {
+    const k = evalKickCount(latestKick.kickCount);
+    if (k && k.tier !== "normal") reasons.push({ label: "Fetal movement (kick count)", ...k });
+  }
+
+  const woundEntries = cIns.filter((c) => c.wound).map((c) => c.wound);
+  const latestWound = woundEntries[woundEntries.length - 1];
+  if (latestWound) {
+    const prevPain = woundEntries.length > 1 ? woundEntries[woundEntries.length - 2].painScale : null;
+    const r = evalWound(latestWound.symptoms, latestWound.painScale, prevPain);
+    if (r.tier !== "normal") reasons.push({ label: "Wound check", ...r });
+  }
+
+  const vteEntries = cIns.filter((c) => c.vte).map((c) => c.vte);
+  const latestVte = vteEntries[vteEntries.length - 1];
+  if (latestVte?.symptoms?.length) { const r = evalVTE(latestVte.symptoms); if (r.tier !== "normal") reasons.push({ label: "VTE screen", ...r }); }
+
+  const postEntries = cIns.filter((c) => c.postSymptoms?.length).map((c) => c.postSymptoms);
+  const latestPost = postEntries[postEntries.length - 1];
+  if (latestPost) { const r = evalPostpartumSymptoms(latestPost); if (r.tier !== "normal") reasons.push({ label: "Bleeding / urinary symptoms", ...r }); }
+
+  const epdsEntries = cIns.filter((c) => c.epds).map((c) => c.epds);
+  const epdsEntry = epdsEntries[epdsEntries.length - 1];
+  if (epdsEntry) { const r = evalEPDS(epdsEntry.score, epdsEntry.anxietyScore, epdsEntry.selfHarm); if (r.tier !== "normal") reasons.push({ label: "Mental health (EPDS)", ...r }); }
+
+  const nutritionEntries = cIns.filter((c) => c.nutrition).map((c) => c.nutrition);
+  if (nutritionEntries.length) {
+    const r = evalNutrition(nutritionEntries[nutritionEntries.length - 1], nutritionEntries[nutritionEntries.length - 2]);
+    if (r.tier !== "normal") reasons.push({ label: "Nutrition", ...r });
+  }
+
+  return reasons;
+}
+
 /* ---------- PROVIDER VIEW ---------- */
 function ProviderView({ patients, checkins, onSwitch }) {
   const [selected, setSelected] = useState(null);
 
   const rows = useMemo(() => patients.map((p) => {
     const cIns = checkins[p.id] || [];
-    const latest = cIns[cIns.length - 1];
-    const tiers = [];
-    const bpHistory = cIns.filter((c) => c.bp).map((c) => ({ date: c.date, sys: c.bp.sys, dia: c.bp.dia }));
-
-    const bpRelevant = cIns.filter((c) => c.bp || c.symptoms?.length);
-    const latestBpEntry = bpRelevant[bpRelevant.length - 1];
-    if (latestBpEntry) {
-      const bpVal = latestBpEntry.bp ? { sys: latestBpEntry.bp.sys, dia: latestBpEntry.bp.dia } : null;
-      const pre = evalPreeclampsia(bpVal, latestBpEntry.symptoms || [], { weekOrDay: p.weekOrDay, phase: p.phase });
-      if (pre) tiers.push(pre.tier);
-    }
-    const trend = evalBPTrend(bpHistory);
-    if (trend) tiers.push(trend.tier);
-
-    const kickEntries = cIns.filter((c) => c.kickCount != null);
-    const latestKick = kickEntries[kickEntries.length - 1];
-    if (latestKick) { const k = evalKickCount(latestKick.kickCount); if (k) tiers.push(k.tier); }
-
-    const woundEntries = cIns.filter((c) => c.wound).map((c) => c.wound);
-    const latestWound = woundEntries[woundEntries.length - 1];
-    if (latestWound) {
-      const prevPain = woundEntries.length > 1 ? woundEntries[woundEntries.length - 2].painScale : null;
-      tiers.push(evalWound(latestWound.symptoms, latestWound.painScale, prevPain).tier);
-    }
-
-    const vteEntries = cIns.filter((c) => c.vte).map((c) => c.vte);
-    const latestVte = vteEntries[vteEntries.length - 1];
-    if (latestVte) tiers.push(evalVTE(latestVte.symptoms).tier);
-
-    const postEntries = cIns.filter((c) => c.postSymptoms?.length).map((c) => c.postSymptoms);
-    const latestPost = postEntries[postEntries.length - 1];
-    if (latestPost) tiers.push(evalPostpartumSymptoms(latestPost).tier);
-
-    const epdsEntries = cIns.filter((c) => c.epds).map((c) => c.epds);
-    const epdsEntry = epdsEntries[epdsEntries.length - 1];
-    if (epdsEntry) tiers.push(evalEPDS(epdsEntry.score, epdsEntry.anxietyScore, epdsEntry.selfHarm).tier);
-    const nutritionEntries = cIns.filter((c) => c.nutrition).map((c) => c.nutrition);
-    if (nutritionEntries.length) tiers.push(evalNutrition(nutritionEntries[nutritionEntries.length - 1], nutritionEntries[nutritionEntries.length - 2]).tier);
-    return { ...p, tier: worstTier(tiers), latest, epdsEntry };
+    const reasons = computePatientReasons(p, cIns);
+    return { ...p, tier: worstTier(reasons.map((r) => r.tier)), reasons };
   }).sort((a, b) => (a.tier === b.tier ? 0 : a.tier === "urgent" ? -1 : b.tier === "urgent" ? 1 : a.tier === "monitor" ? -1 : 1)),
   [patients, checkins]);
 
@@ -987,6 +1006,16 @@ function ProviderView({ patients, checkins, onSwitch }) {
                 <div style={{ fontSize: 12, color: "#5b6b64", marginTop: 2 }}>
                   {r.phase === "pre-term" ? `Wk ${r.weekOrDay}` : `Day ${r.weekOrDay} PP`} {r.deliveryType ? `· ${r.deliveryType}` : ""}
                 </div>
+                {r.tier !== "normal" && r.reasons.length > 0 && (
+                  <div style={{ fontSize: 11.5, color: TIER_COLOR[r.tier], marginTop: 4, display: "flex", flexWrap: "wrap", gap: "3px 6px" }}>
+                    {r.reasons.map((reason, i) => (
+                      <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                        <span style={{ width: 5, height: 5, borderRadius: "50%", background: TIER_COLOR[reason.tier], flex: "none" }} />
+                        {reason.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <TierBadge tier={r.tier} />
@@ -1004,48 +1033,7 @@ function ProviderView({ patients, checkins, onSwitch }) {
 
 function PatientDetail({ patient, checkins, onClose }) {
   const bpData = checkins.filter((c) => c.bp).map((c) => ({ date: fmtDate(c.date), sys: c.bp.sys, dia: c.bp.dia }));
-  const bpHistory = checkins.filter((c) => c.bp).map((c) => ({ date: c.date, sys: c.bp.sys, dia: c.bp.dia }));
-  const reasons = [];
-  const bpRelevant = checkins.filter((c) => c.bp || c.symptoms?.length);
-  const latestBpEntry = bpRelevant[bpRelevant.length - 1];
-  if (latestBpEntry) {
-    const bpVal = latestBpEntry.bp ? { sys: latestBpEntry.bp.sys, dia: latestBpEntry.bp.dia } : null;
-    const pre = evalPreeclampsia(bpVal, latestBpEntry.symptoms || [], { weekOrDay: patient.weekOrDay, phase: patient.phase });
-    if (pre && pre.tier !== "normal") reasons.push({ label: "Blood pressure / pre-eclampsia risk", ...pre });
-  }
-  const trend = evalBPTrend(bpHistory);
-  if (trend) reasons.push({ label: "Blood pressure trend", ...trend });
-
-  const kickEntries = checkins.filter((c) => c.kickCount != null);
-  const latestKick = kickEntries[kickEntries.length - 1];
-  if (latestKick) {
-    const k = evalKickCount(latestKick.kickCount);
-    if (k && k.tier !== "normal") reasons.push({ label: "Fetal movement (kick count)", ...k });
-  }
-
-  const woundEntries = checkins.filter((c) => c.wound).map((c) => c.wound);
-  const latestWound = woundEntries[woundEntries.length - 1];
-  if (latestWound) {
-    const prevPain = woundEntries.length > 1 ? woundEntries[woundEntries.length - 2].painScale : null;
-    const r = evalWound(latestWound.symptoms, latestWound.painScale, prevPain);
-    if (r.tier !== "normal") reasons.push({ label: "Wound check", ...r });
-  }
-
-  const vteEntries = checkins.filter((c) => c.vte).map((c) => c.vte);
-  const latestVte = vteEntries[vteEntries.length - 1];
-  if (latestVte?.symptoms?.length) { const r = evalVTE(latestVte.symptoms); if (r.tier !== "normal") reasons.push({ label: "VTE screen", ...r }); }
-
-  const postEntries = checkins.filter((c) => c.postSymptoms?.length).map((c) => c.postSymptoms);
-  const latestPost = postEntries[postEntries.length - 1];
-  if (latestPost) { const r = evalPostpartumSymptoms(latestPost); if (r.tier !== "normal") reasons.push({ label: "Bleeding / urinary symptoms", ...r }); }
-  const epdsEntries = checkins.filter((c) => c.epds).map((c) => c.epds);
-  const epds = epdsEntries[epdsEntries.length - 1];
-  if (epds) { const r = evalEPDS(epds.score, epds.anxietyScore, epds.selfHarm); if (r.tier !== "normal") reasons.push({ label: "Mental health (EPDS)", ...r }); }
-  const nutritionEntries = checkins.filter((c) => c.nutrition).map((c) => c.nutrition);
-  if (nutritionEntries.length) {
-    const r = evalNutrition(nutritionEntries[nutritionEntries.length - 1], nutritionEntries[nutritionEntries.length - 2]);
-    if (r.tier !== "normal") reasons.push({ label: "Nutrition", ...r });
-  }
+  const reasons = computePatientReasons(patient, checkins);
 
   const weights = checkins.filter((c) => c.weight != null).map((c) => c.weight);
   const weightNow = weights[weights.length - 1];
