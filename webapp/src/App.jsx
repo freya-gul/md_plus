@@ -3,7 +3,7 @@ import {
   Heart, AlertTriangle, CheckCircle2, Camera, Activity, Baby,
   ChevronRight, ArrowLeft, TrendingUp, Moon, Utensils, Stethoscope,
   ShieldAlert, ClipboardList, Users, LogOut, ExternalLink,
-  Info, BookOpen, MessageCircle, Send, HelpCircle, Dumbbell, Milk
+  Info, BookOpen, MessageCircle, Send, HelpCircle, Dumbbell, Milk, Lock
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
@@ -375,65 +375,6 @@ function worstTier(tiers) {
   if (tiers.includes("urgent")) return "urgent";
   if (tiers.includes("monitor")) return "monitor";
   return "normal";
-}
-
-/* ---------- seed demo data ---------- */
-function seedData() {
-  const patients = [
-    { id: "p1", name: "Maria Alvarez", phase: "pre-term", weekOrDay: 32, deliveryType: null, dueDate: dayISO(addDays(TODAY, 56)), htnHistory: false },
-    { id: "p2", name: "Jade Whitfield", phase: "post-term", weekOrDay: 6, deliveryType: "C-section", dueDate: dayISO(addDays(TODAY, -42)), psychHistory: true },
-    { id: "p3", name: "Priya Nair", phase: "pre-term", weekOrDay: 38, deliveryType: null, dueDate: dayISO(addDays(TODAY, 14)), htnHistory: true },
-    { id: "p4", name: "Samira Okafor", phase: "post-term", weekOrDay: 30, deliveryType: "Vaginal", dueDate: dayISO(addDays(TODAY, -245)), vteHistory: true },
-  ];
-
-  const checkins = {
-    p1: Array.from({ length: 8 }).map((_, i) => {
-      const sys = 118 + i * 5 + (i > 5 ? 10 : 0);
-      const dia = 76 + i * 2 + (i > 5 ? 6 : 0);
-      return {
-        date: dayISO(addDays(TODAY, -14 + i * 2)),
-        bp: { sys, dia }, weight: 152 + i * 0.4, kickCount: 12 - (i > 5 ? 3 : 0),
-        symptoms: i > 5 ? ["swelling", "visualDisturbance"] : [],
-        ...(i === 0 ? { nutrition: { supplements: ["Prenatal vitamin"], dietRestrictions: [], anemia: false, dietDescription: "Balanced meals, occasional prenatal smoothie" } } : {}),
-        ...(i === 7 ? { nutrition: { supplements: ["Prenatal vitamin"], dietRestrictions: ["Vegetarian"], anemia: true, dietDescription: "Cut out meat this week, feeling low energy" } } : {}),
-      };
-    }),
-    p2: Array.from({ length: 6 }).map((_, i) => ({
-      date: dayISO(addDays(TODAY, -10 + i * 2)),
-      weight: 145 - i * 0.3,
-      wound: { symptoms: i >= 4 ? ["redness", "warmth"] : [] , painScale: i >= 4 ? 6 : 2 },
-      vte: { symptoms: [] },
-      postSymptoms: i === 4 ? ["burningUrination"] : [],
-      epds: i === 5 ? { score: 12, anxietyScore: 7, selfHarm: false, date: dayISO(addDays(TODAY, -1)) } : null,
-    })),
-    p3: Array.from({ length: 5 }).map((_, i) => ({
-      date: dayISO(addDays(TODAY, -8 + i * 2)),
-      bp: { sys: 122 + i, dia: 78 + i }, weight: 165 + i * 0.3, kickCount: 10,
-      symptoms: [],
-    })),
-    p4: Array.from({ length: 5 }).map((_, i) => ({
-      date: dayISO(addDays(TODAY, -8 + i * 2)),
-      wound: { symptoms: [], painScale: 1 },
-      vte: { symptoms: i === 4 ? ["calfPain"] : [] },
-      epds: i === 2 ? { score: 6, anxietyScore: 2, selfHarm: false, date: dayISO(addDays(TODAY, -30)) } : null,
-      ...(i === 3 ? { nutrition: { supplements: ["Prenatal vitamin", "Calcium"], dietRestrictions: [], anemia: false, breastfeeding: true, dietDescription: "Nursing every 2-3 hrs, eating extra dairy and lean protein" } } : {}),
-    })),
-  };
-  return { patients, checkins };
-}
-
-const DEMO_DATA_KEY = "obgyn-demo-data-v4";
-async function loadDemoData() {
-  try {
-    const r = await window.storage.get(DEMO_DATA_KEY, true);
-    if (r?.value) return JSON.parse(r.value);
-  } catch (e) { /* not found yet */ }
-  const seeded = seedData();
-  try { await window.storage.set(DEMO_DATA_KEY, JSON.stringify(seeded), true); } catch (e) {}
-  return seeded;
-}
-async function saveDemoData(data) {
-  try { await window.storage.set(DEMO_DATA_KEY, JSON.stringify(data), true); } catch (e) {}
 }
 
 /* ---------- gestational ruler (signature element) ---------- */
@@ -1824,6 +1765,45 @@ function NewPatientPage({ onSave, onCancel }) {
 }
 
 /* ---------- LOGIN / VIEW SELECT ---------- */
+function LoginScreen({ onLogin }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    const ok = await onLogin(password);
+    setSubmitting(false);
+    if (!ok) setError("Incorrect password");
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0F2A2E", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, sans-serif" }}>
+      <style>{FONTS}</style>
+      <form onSubmit={submit} style={{ textAlign: "center", color: "#fff", width: 280 }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 6 }}>
+          <Lock size={30} color="#B5566B" />
+        </div>
+        <div style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 500, marginBottom: 20 }}>Continuum</div>
+        <input
+          type="password"
+          autoFocus
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid #2c4a48", background: "#14383a", color: "#fff", fontFamily: "IBM Plex Mono, monospace", fontSize: 14 }}
+        />
+        {error && <div style={{ marginTop: 8, fontSize: 12.5, color: "#e39a8d" }}>{error}</div>}
+        <button type="submit" disabled={submitting || !password} style={{ ...selectBtn, background: "#2F6E68", width: "100%", justifyContent: "center", marginTop: 14, opacity: submitting || !password ? 0.6 : 1 }}>
+          {submitting ? "Checking…" : "Enter"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function ViewSelect({ onSelect }) {
   return (
     <div style={{ minHeight: "100vh", background: "#0F2A2E", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, sans-serif" }}>
@@ -1850,55 +1830,101 @@ const selectBtn = { display: "flex", alignItems: "center", gap: 8, color: "#fff"
 
 /* ---------- ROOT ---------- */
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
   const [view, setView] = useState(null);
   const [data, setData] = useState(null);
   const [activePatientId, setActivePatientId] = useState("p1");
   const [addingPatient, setAddingPatient] = useState(false);
   const [patientScreen, setPatientScreen] = useState("checkin"); // checkin | education
 
-  useEffect(() => { loadDemoData().then(setData); }, []);
+  async function refreshData() {
+    const res = await fetch("/api/patients");
+    if (res.status === 401) {
+      setAuthenticated(false);
+      setAuthChecked(true);
+      return;
+    }
+    const json = await res.json();
+    setData({ patients: json.patients, checkins: json.checkins });
+    setAuthenticated(true);
+    setAuthChecked(true);
+  }
+
+  useEffect(() => { refreshData(); }, []);
+
+  async function login(password) {
+    const res = await fetch("/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) return false;
+    await refreshData();
+    return true;
+  }
+
+  if (!authChecked) {
+    return <div style={{ minHeight: "100vh", background: "#0F2A2E", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "Inter, sans-serif" }}>Loading…</div>;
+  }
+
+  if (!authenticated) {
+    return <LoginScreen onLogin={login} />;
+  }
 
   if (!data) {
     return <div style={{ minHeight: "100vh", background: "#0F2A2E", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "Inter, sans-serif" }}>Loading…</div>;
   }
 
   async function submitCheckin(entry) {
-    const next = { ...data, checkins: { ...data.checkins, [activePatientId]: [...(data.checkins[activePatientId] || []), entry] } };
-    setData(next);
-    await saveDemoData(next);
+    await fetch("/api/checkins", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patientId: activePatientId, entry }),
+    });
+    await refreshData();
   }
 
   async function completeEPDS({ psychHistory, epds, editingDate }) {
-    const currentCheckins = data.checkins[activePatientId] || [];
-    const nextCheckins = editingDate
-      ? currentCheckins.map((c) => (c.epds && c.epds.date === editingDate ? { ...c, epds } : c))
-      : [...currentCheckins, { date: dayISO(TODAY), epds }];
-    const next = {
-      ...data,
-      patients: psychHistory === null || psychHistory === undefined
-        ? data.patients
-        : data.patients.map((p) => (p.id === activePatientId ? { ...p, psychHistory } : p)),
-      checkins: { ...data.checkins, [activePatientId]: nextCheckins },
-    };
-    setData(next);
-    await saveDemoData(next);
+    if (editingDate) {
+      await fetch("/api/checkins", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId: activePatientId, editingDate, epds }),
+      });
+    } else {
+      await fetch("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId: activePatientId, entry: { date: dayISO(TODAY), epds } }),
+      });
+    }
+    if (psychHistory !== null && psychHistory !== undefined) {
+      await fetch("/api/patients", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId: activePatientId, psychHistory }),
+      });
+    }
+    await refreshData();
   }
 
   async function setHtnHistory(value) {
-    const next = { ...data, patients: data.patients.map((p) => (p.id === activePatientId ? { ...p, htnHistory: value } : p)) };
-    setData(next);
-    await saveDemoData(next);
+    await fetch("/api/patients", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patientId: activePatientId, htnHistory: value }),
+    });
+    await refreshData();
   }
 
   async function addPatient(newPatient) {
-    const id = `p${Date.now()}`;
-    const next = {
-      ...data,
-      patients: [...data.patients, { id, ...newPatient }],
-      checkins: { ...data.checkins, [id]: [] },
-    };
-    setData(next);
-    await saveDemoData(next);
+    await fetch("/api/patients", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newPatient),
+    });
+    await refreshData();
     setAddingPatient(false);
   }
 
