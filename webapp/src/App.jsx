@@ -1046,7 +1046,7 @@ function computePatientReasons(patient, cIns) {
 }
 
 /* ---------- PROVIDER VIEW ---------- */
-function ProviderView({ patients, checkins, onSwitch }) {
+function ProviderView({ patients, checkins, onSwitch, onAddPatient }) {
   const [selected, setSelected] = useState(null);
 
   const rows = useMemo(() => patients.map((p) => {
@@ -1066,9 +1066,14 @@ function ProviderView({ patients, checkins, onSwitch }) {
           <Stethoscope size={20} />
           <span style={{ fontFamily: "Fraunces, serif", fontSize: 19, fontWeight: 600 }}>Provider dashboard</span>
         </div>
-        <button onClick={onSwitch} style={{ border: "none", background: "rgba(255,255,255,0.1)", color: "#fff", padding: "6px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-          <LogOut size={14} /> Switch view
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button onClick={onAddPatient} style={{ border: "none", background: "#B5566B", color: "#fff", padding: "6px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer", fontWeight: 600 }}>
+            <ClipboardList size={14} /> Add patient
+          </button>
+          <button onClick={onSwitch} style={{ border: "none", background: "rgba(255,255,255,0.1)", color: "#fff", padding: "6px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+            <LogOut size={14} /> Switch view
+          </button>
+        </div>
       </div>
 
       <div style={{ maxWidth: 980, margin: "0 auto", padding: "24px 20px 60px", display: "flex", gap: 20 }}>
@@ -1141,6 +1146,14 @@ function PatientDetail({ patient, checkins, onClose }) {
                 <ShieldAlert size={12} /> PMH: prior hypertension history noted
               </div>
             )}
+            {patient.vteHistory && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "#B5566B", display: "flex", alignItems: "center", gap: 4 }}>
+                <ShieldAlert size={12} /> PMH: prior VTE history noted
+              </div>
+            )}
+            {patient.dob && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "#5b6b64" }}>DOB: {fmtDate(patient.dob)}</div>
+            )}
             {weightNow != null && (
               <div style={{ marginTop: 6, fontSize: 11.5, color: "#5b6b64" }}>
                 Weight: {weightNow} lbs{weightPrev != null ? ` (${weightNow - weightPrev >= 0 ? "+" : ""}${(weightNow - weightPrev).toFixed(1)} since last check-in)` : ""}
@@ -1155,6 +1168,24 @@ function PatientDetail({ patient, checkins, onClose }) {
           <GestationalRuler phase={patient.phase} weekOrDay={patient.weekOrDay} />
         </div>
       </Card>
+
+      {(patient.otherDiagnoses || patient.notes) && (
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<ClipboardList size={16} />} title="Intake notes" />
+          {patient.otherDiagnoses && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#5b6b64" }}>Other diagnoses</div>
+              <div style={{ fontSize: 13, color: "#3d4a44", marginTop: 2 }}>{patient.otherDiagnoses}</div>
+            </div>
+          )}
+          {patient.notes && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#5b6b64" }}>Additional notes</div>
+              <div style={{ fontSize: 13, color: "#3d4a44", marginTop: 2 }}>{patient.notes}</div>
+            </div>
+          )}
+        </Card>
+      )}
 
       {latestWoundPhoto && (
         <Card style={{ marginTop: 14 }}>
@@ -1212,6 +1243,132 @@ function PatientDetail({ patient, checkins, onClose }) {
   );
 }
 
+/* ---------- NEW PATIENT INTAKE ---------- */
+function NewPatientPage({ onSave, onCancel }) {
+  const [name, setName] = useState("");
+  const [dob, setDob] = useState("");
+  const [phase, setPhase] = useState("pre-term");
+  const [weekOrDay, setWeekOrDay] = useState("");
+  const [deliveryType, setDeliveryType] = useState(null);
+  const [htnHistory, setHtnHistory] = useState(false);
+  const [vteHistory, setVteHistory] = useState(false);
+  const [psychHistory, setPsychHistory] = useState(false);
+  const [otherDiagnoses, setOtherDiagnoses] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const canSave = name.trim() && weekOrDay !== "" && (phase === "pre-term" || deliveryType);
+
+  function save() {
+    const n = Number(weekOrDay);
+    const dueDate = phase === "pre-term"
+      ? dayISO(addDays(TODAY, Math.max(0, 40 - n) * 7))
+      : dayISO(addDays(TODAY, -n));
+    onSave({
+      name: name.trim(),
+      dob: dob || null,
+      phase,
+      weekOrDay: n,
+      deliveryType: phase === "post-term" ? deliveryType : null,
+      dueDate,
+      htnHistory,
+      vteHistory,
+      psychHistory,
+      otherDiagnoses: otherDiagnoses.trim(),
+      notes: notes.trim(),
+    });
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F4F6F1", fontFamily: "Inter, sans-serif", color: "#14231F" }}>
+      <style>{FONTS}</style>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "20px 16px 60px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <ClipboardList size={20} color="#2F6E68" />
+            <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600 }}>New patient</span>
+          </div>
+          <button onClick={onCancel} style={{ border: "none", background: "none", color: "#5b6b64", display: "flex", alignItems: "center", gap: 4, fontSize: 13, cursor: "pointer" }}>
+            <ArrowLeft size={14} /> Back to dashboard
+          </button>
+        </div>
+
+        <Card>
+          <SectionTitle icon={<Users size={16} />} title="Basic information" />
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Patient name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" style={{ ...inputStyle, width: "100%", fontFamily: "Inter, sans-serif" }} />
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Date of birth</label>
+            <input type="date" value={dob} onChange={(e) => setDob(e.target.value)} style={{ ...inputStyle, width: 180 }} />
+          </div>
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<Baby size={16} />} title="Pregnancy status" />
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <Chip label="Pre-term (currently pregnant)" active={phase === "pre-term"} onClick={() => setPhase("pre-term")} />
+            <Chip label="Post-term (postpartum)" active={phase === "post-term"} onClick={() => setPhase("post-term")} />
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>{phase === "pre-term" ? "Weeks pregnant" : "Days postpartum"}</label>
+            <input value={weekOrDay} onChange={(e) => setWeekOrDay(e.target.value)} type="number" min={0} style={{ ...inputStyle, width: 120 }} />
+          </div>
+          {phase === "post-term" && (
+            <div style={{ marginTop: 12 }}>
+              <label style={labelStyle}>Delivery type</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Chip label="Vaginal" active={deliveryType === "Vaginal"} onClick={() => setDeliveryType("Vaginal")} />
+                <Chip label="C-section" active={deliveryType === "C-section"} onClick={() => setDeliveryType("C-section")} />
+              </div>
+            </div>
+          )}
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<ShieldAlert size={16} />} title="Past medical history" />
+          <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <Chip label="Hypertension" active={htnHistory} onClick={() => setHtnHistory((v) => !v)} />
+            <Chip label="Prior VTE / blood clot" active={vteHistory} onClick={() => setVteHistory((v) => !v)} />
+            <Chip label="Prior psychiatric / mental health diagnosis" active={psychHistory} onClick={() => setPsychHistory((v) => !v)} />
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Other relevant diagnoses</label>
+            <textarea
+              value={otherDiagnoses}
+              onChange={(e) => setOtherDiagnoses(e.target.value)}
+              placeholder="e.g. gestational diabetes, autoimmune condition, prior C-section..."
+              rows={2}
+              style={{ ...inputStyle, width: "100%", fontFamily: "Inter, sans-serif", resize: "vertical" }}
+            />
+          </div>
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<ClipboardList size={16} />} title="Anything else helpful" />
+          <div style={{ marginTop: 12 }}>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. allergies, support system, language preference, prior pregnancy complications..."
+              rows={3}
+              style={{ ...inputStyle, width: "100%", fontFamily: "Inter, sans-serif", resize: "vertical" }}
+            />
+          </div>
+        </Card>
+
+        <button
+          onClick={save}
+          disabled={!canSave}
+          style={{ ...primaryBtn, width: "100%", marginTop: 18, padding: "13px 0", fontSize: 15, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
+        >
+          Add patient
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- LOGIN / VIEW SELECT ---------- */
 function ViewSelect({ onSelect }) {
   return (
@@ -1242,6 +1399,7 @@ export default function App() {
   const [view, setView] = useState(null);
   const [data, setData] = useState(null);
   const [activePatientId, setActivePatientId] = useState("p1");
+  const [addingPatient, setAddingPatient] = useState(false);
 
   useEffect(() => { loadDemoData().then(setData); }, []);
 
@@ -1277,6 +1435,18 @@ export default function App() {
     await saveDemoData(next);
   }
 
+  async function addPatient(newPatient) {
+    const id = `p${Date.now()}`;
+    const next = {
+      ...data,
+      patients: [...data.patients, { id, ...newPatient }],
+      checkins: { ...data.checkins, [id]: [] },
+    };
+    setData(next);
+    await saveDemoData(next);
+    setAddingPatient(false);
+  }
+
   if (!view) return <ViewSelect onSelect={setView} />;
 
   if (view === "patient") {
@@ -1294,5 +1464,9 @@ export default function App() {
     );
   }
 
-  return <ProviderView patients={data.patients} checkins={data.checkins} onSwitch={() => setView(null)} />;
+  if (addingPatient) {
+    return <NewPatientPage onSave={addPatient} onCancel={() => setAddingPatient(false)} />;
+  }
+
+  return <ProviderView patients={data.patients} checkins={data.checkins} onSwitch={() => setView(null)} onAddPatient={() => setAddingPatient(true)} />;
 }
