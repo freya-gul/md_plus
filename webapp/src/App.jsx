@@ -27,6 +27,7 @@ const TODAY = new Date("2026-07-22T09:00:00");
 const dayISO = (d) => d.toISOString().slice(0, 10);
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const fmtDate = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const fmtClock = (d) => d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 
 /* ---------- clinical thresholds (from flowchart evidence basis) ----------
    Every result carries a `note` (patient-facing, plain language) and a
@@ -295,11 +296,14 @@ async function evalNutritionAI({ current, previous, patient }) {
         phase: patient.phase,
       }),
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data.error || !data.tier) return null;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error || !data.tier) {
+      console.error("Nutrition AI review failed:", res.status, data.error || data);
+      return null;
+    }
     return { tier: data.tier, note: data.note, providerNote: data.providerNote, source: "AI diet review (Claude)" };
-  } catch {
+  } catch (err) {
+    console.error("Nutrition AI review request failed:", err);
     return null;
   }
 }
@@ -512,6 +516,8 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
   const postpartumResult = isPostSection && postSymptoms.length ? evalPostpartumSymptoms(postSymptoms) : null;
   const bpHistoryForTrend = (checkins || []).filter((c) => c.bp).map((c) => ({ date: c.date, sys: c.bp.sys, dia: c.bp.dia }));
   const trendResult = evalBPTrend(bpHistoryForTrend);
+  const bpEntries = (checkins || []).filter((c) => c.bp).map((c) => ({ date: c.date, ...c.bp }));
+  const lastBp = bpEntries[bpEntries.length - 1];
   const cadence = isPostTerm ? bpCadencePhase(daysSince) : null;
   const todaysBpCount = (checkins || []).filter((c) => c.date === dayISO(TODAY) && c.bp).length;
   const cadenceDue = cadence && todaysBpCount < cadence.required;
@@ -555,7 +561,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
     const hasNutrition = dietDescription.trim() || supplements.length || dietRestrictions.length || anemia || (isPostTerm && breastfeeding);
     const entry = {
       date: dayISO(TODAY),
-      ...(bp.sys && bp.dia ? { bp: { sys: Number(bp.sys), dia: Number(bp.dia) } } : {}),
+      ...(bp.sys && bp.dia ? { bp: { sys: Number(bp.sys), dia: Number(bp.dia), time: fmtClock(TODAY) } } : {}),
       ...(weight ? { weight: Number(weight) } : {}),
       ...(kick ? { kickCount: Number(kick) } : {}),
       ...(symptoms.length ? { symptoms } : {}),
@@ -610,6 +616,11 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
 
         <Card style={{ marginTop: 14 }}>
           <SectionTitle icon={<Activity size={16} />} title="Blood pressure & symptoms" />
+          {lastBp && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: "#5b6b64" }}>
+              Last checked {fmtDate(lastBp.date)}{lastBp.time ? ` at ${lastBp.time}` : ""} — {lastBp.sys}/{lastBp.dia}
+            </div>
+          )}
           {patient.htnHistory === undefined ? (
             <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "#f9f9f7", border: "1px solid #e7ece7" }}>
               <div style={{ fontSize: 12.5, color: "#3d4a44" }}>Before your first check: do you have a history of high blood pressure or hypertension prior to this pregnancy?</div>
@@ -733,11 +744,14 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
               ))}
             </div>
           </div>
-          <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <Chip label="Anemia" active={anemia} onClick={() => setAnemia((a) => !a)} />
-            {isPostTerm && (
-              <Chip label="Currently breastfeeding" active={breastfeeding} onClick={() => setBreastfeeding((b) => !b)} />
-            )}
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Health status</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <Chip label="Anemia" active={anemia} onClick={() => setAnemia((a) => !a)} />
+              {isPostTerm && (
+                <Chip label="Currently breastfeeding" active={breastfeeding} onClick={() => setBreastfeeding((b) => !b)} />
+              )}
+            </div>
           </div>
           <div style={{ marginTop: 12 }}>
             <label style={labelStyle}>Current diet (brief notes)</label>
