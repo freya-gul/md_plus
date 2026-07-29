@@ -2,11 +2,13 @@ import { useState, useEffect, useMemo } from "react";
 import {
   Heart, AlertTriangle, CheckCircle2, Camera, Activity, Baby,
   ChevronRight, ArrowLeft, TrendingUp, Moon, Utensils, Stethoscope,
-  ShieldAlert, ClipboardList, Users, LogOut, ExternalLink
+  ShieldAlert, ClipboardList, Users, LogOut, ExternalLink,
+  Info, BookOpen, MessageCircle, Send, HelpCircle, Dumbbell, Milk
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from "recharts";
+import { ACOG_CONTENT } from "../shared/acogContent.js";
 
 /* ---------- design tokens ----------
   ink:        #14231F   near-black, green-tinted, primary text
@@ -21,7 +23,28 @@ import {
 
 const FONTS = `
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+.info-tip { position: relative; display: inline-flex; vertical-align: middle; cursor: help; }
+.info-tip .tip-bubble {
+  display: none; position: absolute; z-index: 30; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
+  width: 240px; background: #14231F; color: #F4F6F1; font-family: Inter, sans-serif; font-weight: 400;
+  font-size: 12px; line-height: 1.45; padding: 9px 11px; border-radius: 8px; box-shadow: 0 4px 14px rgba(20,35,31,0.25);
+  text-transform: none; letter-spacing: normal;
+}
+.info-tip .tip-bubble::after {
+  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: #14231F;
+}
+.info-tip:hover .tip-bubble, .info-tip:focus .tip-bubble { display: block; }
 `;
+
+function InfoTip({ text }) {
+  return (
+    <span className="info-tip" tabIndex={0} aria-label={text}>
+      <Info size={13} color="#8a9791" />
+      <span className="tip-bubble">{text}</span>
+    </span>
+  );
+}
 
 const TODAY = new Date("2026-07-22T09:00:00");
 const dayISO = (d) => d.toISOString().slice(0, 10);
@@ -343,6 +366,11 @@ const MINDFULNESS_TIPS = [
 
 const TIER_COLOR = { normal: "#4B8B6F", monitor: "#C08A2E", urgent: "#B23A2E" };
 const TIER_LABEL = { normal: "Normal", monitor: "Monitor", urgent: "Urgent" };
+const TIER_EXPLANATION = {
+  normal: "Normal: what you reported is within the expected range. No action needed — keep up with your regular check-in schedule.",
+  monitor: "Monitor: something you reported is outside the usual range but isn't an emergency. Your care team has been notified and will follow up; keep watching for changes and contact them sooner if things get worse.",
+  urgent: "Urgent: this needs attention now. Contact your care team right away, or go to urgent/emergency care if you can't reach them.",
+};
 function worstTier(tiers) {
   if (tiers.includes("urgent")) return "urgent";
   if (tiers.includes("monitor")) return "monitor";
@@ -448,13 +476,41 @@ function GestationalRuler({ phase, weekOrDay, alerts = [] }) {
 /* ---------- shared bits ---------- */
 function TierBadge({ tier }) {
   return (
-    <span style={{
+    <span title={TIER_EXPLANATION[tier]} style={{
       display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999,
-      fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600, color: "#fff", background: TIER_COLOR[tier]
+      fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600, color: "#fff", background: TIER_COLOR[tier], cursor: "help"
     }}>
       {tier === "urgent" ? <AlertTriangle size={12} /> : tier === "monitor" ? <ShieldAlert size={12} /> : <CheckCircle2 size={12} />}
       {TIER_LABEL[tier]}
     </span>
+  );
+}
+
+/* ---------- always-visible explainer for what each tier means/expects ---------- */
+function TierLegend() {
+  const [open, setOpen] = useState(false);
+  return (
+    <Card style={{ marginTop: 14 }}>
+      <div
+        onClick={() => setOpen((o) => !o)}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, color: "#3d4a44" }}>
+          <HelpCircle size={15} color="#2F6E68" /> What do "Normal / Monitor / Urgent" mean?
+        </div>
+        <ChevronRight size={15} color="#a8b3ad" style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+      </div>
+      {open && (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+          {["normal", "monitor", "urgent"].map((t) => (
+            <div key={t} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <TierBadge tier={t} />
+              <span style={{ fontSize: 12.5, color: "#3d4a44", lineHeight: 1.45 }}>{TIER_EXPLANATION[t]}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -467,7 +523,7 @@ function Card({ children, style }) {
 }
 
 /* ---------- PATIENT VIEW ---------- */
-function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSetHtnHistory, onSwitch }) {
+function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSetHtnHistory, onSwitch, onOpenEducation }) {
   const [bp, setBp] = useState({ sys: "", dia: "" });
   const [weight, setWeight] = useState("");
   const [symptoms, setSymptoms] = useState([]);
@@ -587,9 +643,14 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             <Heart size={20} color="#B5566B" fill="#B5566B" />
             <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600 }}>{patient.name}</span>
           </div>
-          <button onClick={onSwitch} style={{ border: "none", background: "none", color: "#5b6b64", display: "flex", alignItems: "center", gap: 4, fontSize: 13, cursor: "pointer" }}>
-            <LogOut size={14} /> Switch view
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <button onClick={onOpenEducation} style={{ border: "none", background: "none", color: "#2F6E68", display: "flex", alignItems: "center", gap: 4, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              <BookOpen size={14} /> Education
+            </button>
+            <button onClick={onSwitch} style={{ border: "none", background: "none", color: "#5b6b64", display: "flex", alignItems: "center", gap: 4, fontSize: 13, cursor: "pointer" }}>
+              <LogOut size={14} /> Switch view
+            </button>
+          </div>
         </div>
 
         <Card style={{ marginTop: 14 }}>
@@ -610,8 +671,14 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
           </div>
         )}
 
+        <TierLegend />
+
         <Card style={{ marginTop: 14 }}>
-          <SectionTitle icon={<Activity size={16} />} title="Blood pressure & symptoms" />
+          <SectionTitle
+            icon={<Activity size={16} />}
+            title="Blood pressure & symptoms"
+            info="High blood pressure can be an early sign of pre-eclampsia, a pregnancy/postpartum complication that affects your organs. Tracking readings over time lets your care team catch a rising trend before any single reading looks alarming."
+          />
           {lastBp && (
             <div style={{ marginTop: 8, fontSize: 12.5, color: "#5b6b64" }}>
               Last checked {fmtDate(lastBp.date)}{lastBp.time ? ` at ${lastBp.time}` : ""} — {lastBp.sys}/{lastBp.dia}
@@ -636,7 +703,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             <input placeholder="Diastolic" value={bp.dia} onChange={(e) => setBp({ ...bp, dia: e.target.value })} style={inputStyle} type="number" />
           </div>
           <div style={{ marginTop: 10 }}>
-            <label style={labelStyle}>Weight (lbs)</label>
+            <label style={labelStyle}>Weight (lbs) <InfoTip text="Sudden weight gain (more than ~2 lbs in a week) can signal fluid retention linked to pre-eclampsia, so we track it alongside blood pressure." /></label>
             <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" style={{ ...inputStyle, width: 120 }} />
           </div>
           {bpResult && <InlineNote result={bpResult} />}
@@ -648,7 +715,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
           </div>
           {patient.phase === "pre-term" && (
             <div style={{ marginTop: 12 }}>
-              <label style={labelStyle}>Kick count (last 2 hrs)</label>
+              <label style={labelStyle}>Kick count (last 2 hrs) <InfoTip text="A noticeable drop in fetal movement can be an early sign of fetal distress. Counting kicks is a simple way to catch that early, before anything else changes." /></label>
               <input value={kick} onChange={(e) => setKick(e.target.value)} type="number" style={{ ...inputStyle, width: 100 }} />
               {kickResult && <InlineNote result={kickResult} />}
             </div>
@@ -657,7 +724,11 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
 
         {isPostSection && (
           <Card style={{ marginTop: 14 }}>
-            <SectionTitle icon={<Camera size={16} />} title="Wound & VTE check" />
+            <SectionTitle
+              icon={<Camera size={16} />}
+              title="Wound & VTE check"
+              info="C-section incisions can develop infections, and pregnancy/postpartum raises the risk of blood clots (VTE). These questions help your care team catch either one early, while it's still easy to treat."
+            />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
               {["redness", "discharge", "warmth", "fever"].map((s) => (
                 <Chip key={s} label={labelize(s)} active={wound.includes(s)} onClick={() => toggle(wound, setWound, s)} />
@@ -674,7 +745,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
               )}
             </div>
             <div style={{ marginTop: 12 }}>
-              <label style={labelStyle}>Pain scale (0–10): {pain}</label>
+              <label style={labelStyle}>Pain scale (0–10): {pain} <InfoTip text="Pain that's rising, not just high, can signal a developing infection even before other symptoms show up — that's why we compare this to your last check-in." /></label>
               <input type="range" min={0} max={10} value={pain} onChange={(e) => setPain(Number(e.target.value))} style={{ width: "100%" }} />
             </div>
             <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -685,7 +756,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             {woundResult && <InlineNote result={woundResult} />}
             {vteResult && <InlineNote result={vteResult} />}
             <div style={{ marginTop: 12 }}>
-              <label style={labelStyle}>Other postpartum symptoms</label>
+              <label style={labelStyle}>Other postpartum symptoms <InfoTip text="Heavy bleeding can signal postpartum hemorrhage, and burning urination can signal a UTI — both are treatable, and both are much easier to treat when caught early." /></label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {["bleeding", "burningUrination"].map((s) => (
                   <Chip key={s} label={labelize(s)} active={postSymptoms.includes(s)} onClick={() => toggle(postSymptoms, setPostSymptoms, s)} />
@@ -698,7 +769,11 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
 
         {showEPDS && (
           <Card style={{ marginTop: 14, borderLeft: "3px solid #B5566B" }}>
-            <SectionTitle icon={<Moon size={16} />} title="Mental health check-in due" />
+            <SectionTitle
+              icon={<Moon size={16} />}
+              title="Mental health check-in due"
+              info="Postpartum depression and anxiety are common and very treatable. This validated screening (EPDS) helps your care team know when to check in more closely, well before things feel unmanageable."
+            />
             <p style={{ fontSize: 13.5, color: "#3d4a44", marginTop: 8 }}>
               It's time for your Edinburgh Postnatal Depression Scale (EPDS) screening. This takes about 2 minutes.
             </p>
@@ -723,7 +798,11 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
         )}
 
         <Card style={{ marginTop: 14 }}>
-          <SectionTitle icon={<Utensils size={16} />} title="Nutrition & supplements" />
+          <SectionTitle
+            icon={<Utensils size={16} />}
+            title="Nutrition & supplements"
+            info="What you eat and take affects both you and your baby (or milk supply). These questions help your care team spot gaps early — like anemia risk from a restricted diet — reviewed against ACOG guidance."
+          />
           <div style={{ marginTop: 10 }}>
             <label style={labelStyle}>Current supplements</label>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -826,10 +905,11 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
   );
 }
 
-function SectionTitle({ icon, title }) {
+function SectionTitle({ icon, title, info }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "Fraunces, serif", fontSize: 15.5, fontWeight: 600 }}>
       <span style={{ color: "#2F6E68" }}>{icon}</span>{title}
+      {info && <InfoTip text={info} />}
     </div>
   );
 }
@@ -1243,6 +1323,202 @@ function PatientDetail({ patient, checkins, onClose }) {
   );
 }
 
+/* ---------- EDUCATION: subjects, FAQs, and AI Q&A ----------
+   FAQ text, scope, sources, and the grounding excerpt all come from
+   ACOG_CONTENT (shared/acogContent.js), fetched from live ACOG patient
+   FAQ pages — this file only adds the icon and short UI blurb per topic.
+   The same ACOG_CONTENT.<key>.scope string is sent to /api/ask-education
+   so the model only answers within that topic and declines (rather than
+   improvises) anything outside it or anything needing a personal diagnosis.
+------------------------------------------------------------------------- */
+const EDUCATION_SUBJECTS = [
+  { key: "nutrition", icon: Utensils, blurb: "Eating well during pregnancy and postpartum, supplements, and special diets.", ...ACOG_CONTENT.nutrition },
+  { key: "hypertension", icon: Activity, blurb: "Blood pressure changes, pre-eclampsia warning signs, and why we monitor closely.", ...ACOG_CONTENT.hypertension },
+  { key: "postpartum-recovery", icon: Heart, blurb: "What's normal after delivery, healing timelines, and warning signs.", ...ACOG_CONTENT["postpartum-recovery"] },
+  { key: "pelvic-floor", icon: Dumbbell, blurb: "Kegels, pelvic organ prolapse, returning to exercise, and pelvic floor health.", ...ACOG_CONTENT["pelvic-floor"] },
+  { key: "breastfeeding", icon: Milk, blurb: "Latch, feeding schedules, diet, mastitis, and medication safety.", ...ACOG_CONTENT.breastfeeding },
+];
+
+async function askEducation(subjectKey, question) {
+  try {
+    const res = await fetch("/api/ask-education", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject: subjectKey, question }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error || typeof data.answer !== "string") {
+      return { error: data.error || "Something went wrong reaching the assistant." };
+    }
+    return { answer: data.answer, onTopic: data.onTopic !== false };
+  } catch (err) {
+    return { error: "Couldn't reach the assistant — check your connection and try again." };
+  }
+}
+
+function EducationChat({ subject }) {
+  const [input, setInput] = useState("");
+  const [thread, setThread] = useState([]);
+  const [status, setStatus] = useState("idle"); // idle | loading | error
+
+  async function send() {
+    const question = input.trim();
+    if (!question || status === "loading") return;
+    setInput("");
+    setStatus("loading");
+    const result = await askEducation(subject.key, question);
+    if (result.error) {
+      setThread((t) => [...t, { question, error: result.error }]);
+      setStatus("error");
+    } else {
+      setThread((t) => [...t, { question, answer: result.answer, onTopic: result.onTopic }]);
+      setStatus("idle");
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <MessageCircle size={15} color="#2F6E68" />
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#3d4a44" }}>Ask about {subject.label.toLowerCase()}</span>
+      </div>
+      <div style={{ fontSize: 11.5, color: "#8a9791", marginTop: 4 }}>
+        Answers are drawn only from ACOG and other validated guidelines, and are limited to this topic — for anything specific to you, contact your care team.
+      </div>
+
+      {thread.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+          {thread.map((t, i) => (
+            <div key={i}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#14231F" }}>{t.question}</div>
+              {t.error ? (
+                <div style={{ fontSize: 12.5, color: "#B23A2E", marginTop: 4 }}>{t.error}</div>
+              ) : (
+                <div style={{
+                  fontSize: 13, color: "#3d4a44", marginTop: 4, padding: "9px 12px", borderRadius: 10,
+                  background: t.onTopic ? "#f9f9f7" : "#faf1de", border: `1px solid ${t.onTopic ? "#e7ece7" : "#C08A2E33"}`,
+                }}>
+                  {t.answer}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") send(); }}
+          placeholder={`Ask a question about ${subject.label.toLowerCase()}...`}
+          style={{ ...inputStyle, width: "100%", fontFamily: "Inter, sans-serif" }}
+        />
+        <button
+          onClick={send}
+          disabled={status === "loading" || !input.trim()}
+          style={{ ...primaryBtn, padding: "0 14px", opacity: status === "loading" || !input.trim() ? 0.6 : 1, display: "flex", alignItems: "center" }}
+        >
+          <Send size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EducationView({ onBack }) {
+  const [selectedKey, setSelectedKey] = useState(null);
+  const subject = EDUCATION_SUBJECTS.find((s) => s.key === selectedKey);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F4F6F1", fontFamily: "Inter, sans-serif", color: "#14231F" }}>
+      <style>{FONTS}</style>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "20px 16px 60px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <BookOpen size={20} color="#2F6E68" />
+            <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600 }}>Education</span>
+          </div>
+          <button
+            onClick={() => (subject ? setSelectedKey(null) : onBack())}
+            style={{ border: "none", background: "none", color: "#5b6b64", display: "flex", alignItems: "center", gap: 4, fontSize: 13, cursor: "pointer" }}
+          >
+            <ArrowLeft size={14} /> {subject ? "All topics" : "Back to check-in"}
+          </button>
+        </div>
+
+        {!subject && (
+          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ fontSize: 13, color: "#5b6b64" }}>Pick a topic to see frequently asked questions or ask your own.</div>
+            {EDUCATION_SUBJECTS.map((s) => (
+              <Card
+                key={s.key}
+                style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+              >
+                <div onClick={() => setSelectedKey(s.key)} style={{ display: "flex", gap: 12, alignItems: "center", flex: 1 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 10, background: "#eef2ee", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
+                    <s.icon size={17} color="#2F6E68" />
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14.5, fontFamily: "Fraunces, serif" }}>{s.label}</div>
+                    <div style={{ fontSize: 12, color: "#5b6b64", marginTop: 2 }}>{s.blurb}</div>
+                  </div>
+                </div>
+                <ChevronRight size={16} color="#a8b3ad" onClick={() => setSelectedKey(s.key)} />
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {subject && (
+          <>
+            <Card style={{ marginTop: 14 }}>
+              <SectionTitle icon={<subject.icon size={16} />} title={subject.label} />
+              <p style={{ fontSize: 13, color: "#5b6b64", marginTop: 6 }}>{subject.blurb}</p>
+            </Card>
+
+            <Card style={{ marginTop: 14 }}>
+              <SectionTitle icon={<HelpCircle size={16} />} title="Frequently asked questions" />
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                {subject.faqs.map((f, i) => (
+                  <details key={i} style={{ borderTop: i > 0 ? "1px solid #eef2ee" : "none", paddingTop: i > 0 ? 8 : 0 }}>
+                    <summary style={{ fontSize: 13.5, fontWeight: 600, cursor: "pointer", color: "#14231F" }}>{f.q}</summary>
+                    <div style={{ fontSize: 13, color: "#3d4a44", marginTop: 6, lineHeight: 1.5 }}>{f.a}</div>
+                  </details>
+                ))}
+              </div>
+              <div style={{ marginTop: 12, fontSize: 11, color: "#8a9791", display: "flex", flexDirection: "column", gap: 2 }}>
+                {subject.sources.map((src, i) => (
+                  <div key={i}>
+                    Source: <a href={src.url} target="_blank" rel="noreferrer" style={{ color: "#8a9791" }}>{src.label}</a>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card style={{ marginTop: 14 }}>
+              <details>
+                <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ color: "#2F6E68" }}><ExternalLink size={15} /></span>
+                  <span style={{ fontFamily: "Fraunces, serif", fontSize: 14.5, fontWeight: 600 }}>Read the ACOG source text</span>
+                </summary>
+                <p style={{ fontSize: 11.5, color: "#8a9791", marginTop: 8 }}>
+                  This is the actual reference text pulled from ACOG's patient FAQ pages — it's what the assistant below is grounded in when answering your questions.
+                </p>
+                <p style={{ fontSize: 13, color: "#3d4a44", marginTop: 10, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{subject.excerpt}</p>
+              </details>
+            </Card>
+
+            <Card style={{ marginTop: 14 }}>
+              <EducationChat subject={subject} />
+            </Card>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- NEW PATIENT INTAKE ---------- */
 function NewPatientPage({ onSave, onCancel }) {
   const [name, setName] = useState("");
@@ -1400,6 +1676,7 @@ export default function App() {
   const [data, setData] = useState(null);
   const [activePatientId, setActivePatientId] = useState("p1");
   const [addingPatient, setAddingPatient] = useState(false);
+  const [patientScreen, setPatientScreen] = useState("checkin"); // checkin | education
 
   useEffect(() => { loadDemoData().then(setData); }, []);
 
@@ -1450,6 +1727,9 @@ export default function App() {
   if (!view) return <ViewSelect onSelect={setView} />;
 
   if (view === "patient") {
+    if (patientScreen === "education") {
+      return <EducationView onBack={() => setPatientScreen("checkin")} />;
+    }
     const patient = data.patients.find((p) => p.id === activePatientId);
     return (
       <div>
@@ -1459,7 +1739,15 @@ export default function App() {
             <span key={p.id} onClick={() => setActivePatientId(p.id)} style={{ cursor: "pointer", fontWeight: p.id === activePatientId ? 700 : 400, textDecoration: p.id === activePatientId ? "underline" : "none" }}>{p.name.split(" ")[0]}</span>
           ))}
         </div>
-        <PatientView patient={patient} checkins={data.checkins[activePatientId]} onSubmitCheckin={submitCheckin} onCompleteEPDS={completeEPDS} onSetHtnHistory={setHtnHistory} onSwitch={() => setView(null)} />
+        <PatientView
+          patient={patient}
+          checkins={data.checkins[activePatientId]}
+          onSubmitCheckin={submitCheckin}
+          onCompleteEPDS={completeEPDS}
+          onSetHtnHistory={setHtnHistory}
+          onSwitch={() => setView(null)}
+          onOpenEducation={() => setPatientScreen("education")}
+        />
       </div>
     );
   }
