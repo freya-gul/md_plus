@@ -272,6 +272,49 @@ function supplementReminders(nutrition, patient) {
   return reminders;
 }
 
+/* ---------- LLM-assisted nutrition review ----------
+   evalNutrition() (above) is a deterministic keyword/diff check — cheap,
+   always available, but "did the wording change" isn't the same as "is
+   this actually concerning." The API route asks Claude to read the diet
+   description and judge clinical relevance; its tier is combined with the
+   keyword tier (worst-of) so the AI call is additive, never a single point
+   of failure — if the call fails, the keyword result still applies.
+------------------------------------------------------------------------- */
+async function evalNutritionAI({ current, previous, patient }) {
+  try {
+    const res = await fetch("/api/evaluate-nutrition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dietDescription: current.dietDescription || "",
+        previousDietDescription: previous?.dietDescription || "",
+        dietRestrictions: current.dietRestrictions || [],
+        supplements: current.supplements || [],
+        anemia: !!current.anemia,
+        breastfeeding: !!current.breastfeeding,
+        phase: patient.phase,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.error || !data.tier) return null;
+    return { tier: data.tier, note: data.note, providerNote: data.providerNote, source: "AI diet review (Claude)" };
+  } catch {
+    return null;
+  }
+}
+
+function mergeNutritionAssessment(keywordResult, aiResult) {
+  if (!aiResult) return keywordResult;
+  if (!keywordResult) return aiResult;
+  return {
+    tier: worstTier([keywordResult.tier, aiResult.tier]),
+    note: aiResult.note,
+    providerNote: aiResult.providerNote,
+    source: aiResult.source,
+  };
+}
+
 /* ---------- EPDS (Edinburgh Postnatal Depression Scale, 10 items) ----------
    Scoring: total >=10 is a positive screen. Items 3/4/5 form the anxiety
    subscale (EPDS-3A); >=6 flags anxiety even when the total is <10.
@@ -439,6 +482,8 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
   const [anemia, setAnemia] = useState(false);
   const [breastfeeding, setBreastfeeding] = useState(false);
   const [dietDescription, setDietDescription] = useState("");
+  const [aiNutrition, setAiNutrition] = useState(null);
+  const [aiNutritionStatus, setAiNutritionStatus] = useState("idle"); // idle | loading | error
   const [submitted, setSubmitted] = useState(false);
   const [showEPDSForm, setShowEPDSForm] = useState(false);
   const [editingEpds, setEditingEpds] = useState(null);
@@ -474,9 +519,21 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
   const nutritionHistory = (checkins || []).filter((c) => c.nutrition).map((c) => c.nutrition);
   const lastNutrition = nutritionHistory[nutritionHistory.length - 1];
   const nutritionInput = { supplements, dietRestrictions, anemia, breastfeeding: isPostTerm ? breastfeeding : undefined, dietDescription };
-  const nutritionResult = dietDescription.trim() ? evalNutrition(nutritionInput, lastNutrition) : null;
+  const nutritionKeywordResult = dietDescription.trim() ? evalNutrition(nutritionInput, lastNutrition) : null;
+  const nutritionResult = mergeNutritionAssessment(nutritionKeywordResult, aiNutrition);
   const nutritionRecs = nutritionRecommendations(nutritionInput, patient);
   const nutritionReminders = supplementReminders(nutritionInput, patient);
+
+  async function requestAiNutritionReview() {
+    setAiNutritionStatus("loading");
+    const result = await evalNutritionAI({ current: nutritionInput, previous: lastNutrition, patient });
+    if (result) {
+      setAiNutrition(result);
+      setAiNutritionStatus("idle");
+    } else {
+      setAiNutritionStatus("error");
+    }
+  }
 
   const chartData = (checkins || []).filter((c) => c.bp).map((c) => ({
     date: fmtDate(c.date), sys: c.bp.sys, dia: c.bp.dia,
@@ -506,7 +563,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
       ...(isPostSection ? { vte: { symptoms: vte } } : {}),
       ...(isPostSection && postSymptoms.length ? { postSymptoms } : {}),
       ...(hasNutrition
-        ? { nutrition: { supplements, dietRestrictions, anemia, ...(isPostTerm ? { breastfeeding } : {}), dietDescription: dietDescription.trim() } }
+        ? { nutrition: { supplements, dietRestrictions, anemia, ...(isPostTerm ? { breastfeeding } : {}), dietDescription: dietDescription.trim(), ...(aiNutrition ? { aiAssessment: aiNutrition } : {}) } }
         : {}),
     };
     onSubmitCheckin(entry);
@@ -686,11 +743,23 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             <label style={labelStyle}>Current diet (brief notes)</label>
             <textarea
               value={dietDescription}
-              onChange={(e) => setDietDescription(e.target.value)}
+              onChange={(e) => { setDietDescription(e.target.value); setAiNutrition(null); setAiNutritionStatus("idle"); }}
               placeholder="e.g. typical meals, any recent changes"
               rows={2}
               style={{ ...inputStyle, width: "100%", fontFamily: "Inter, sans-serif", resize: "vertical" }}
             />
+            {dietDescription.trim() && (
+              <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                <button
+                  onClick={requestAiNutritionReview}
+                  disabled={aiNutritionStatus === "loading"}
+                  style={{ ...primaryBtn, padding: "6px 14px", fontSize: 12.5, background: "#fff", color: "#2F6E68", border: "1px solid #2F6E68", opacity: aiNutritionStatus === "loading" ? 0.6 : 1 }}
+                >
+                  {aiNutritionStatus === "loading" ? "Reviewing…" : aiNutrition ? "Re-review with AI" : "Ask AI to review this diet"}
+                </button>
+                {aiNutritionStatus === "error" && <span style={{ fontSize: 11.5, color: "#8a9791" }}>AI review unavailable — showing rule-based check only</span>}
+              </div>
+            )}
           </div>
           {nutritionResult && <InlineNote result={nutritionResult} />}
           <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid #eef2ee" }}>
@@ -957,7 +1026,9 @@ function computePatientReasons(patient, cIns) {
 
   const nutritionEntries = cIns.filter((c) => c.nutrition).map((c) => c.nutrition);
   if (nutritionEntries.length) {
-    const r = evalNutrition(nutritionEntries[nutritionEntries.length - 1], nutritionEntries[nutritionEntries.length - 2]);
+    const latestNutrition = nutritionEntries[nutritionEntries.length - 1];
+    const keyword = evalNutrition(latestNutrition, nutritionEntries[nutritionEntries.length - 2]);
+    const r = mergeNutritionAssessment(keyword, latestNutrition.aiAssessment || null);
     if (r.tier !== "normal") reasons.push({ label: "Nutrition", ...r });
   }
 
