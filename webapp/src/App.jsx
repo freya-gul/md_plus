@@ -28,27 +28,275 @@ const dayISO = (d) => d.toISOString().slice(0, 10);
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const fmtDate = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-/* ---------- clinical thresholds (from flowchart evidence basis) ---------- */
-function evalBP(sys, dia) {
-  if (sys >= 160 || dia >= 110) return { tier: "urgent", note: "≥160/110 — severe pre-eclampsia range, medical emergency", source: "ACOG" };
-  if (sys >= 140 || dia >= 90) return { tier: "monitor", note: "≥140/90 — monitor for pre-eclampsia; confirm with repeat reading 4+ hrs apart", source: "ACOG" };
-  return { tier: "normal", note: "Within expected range", source: "ACOG" };
+/* ---------- clinical thresholds (from flowchart evidence basis) ----------
+   Every result carries a `note` (patient-facing, plain language) and a
+   `providerNote` (clinical language, includes the specific recommended
+   action) — the flowchart specifies these as separate output columns.
+------------------------------------------------------------------------- */
+function evalBP(sys, dia, opts = {}) {
+  const { weekOrDay, phase } = opts;
+  const chronicNote = phase === "pre-term" && weekOrDay != null && weekOrDay < 20
+    ? " Elevated before 20 weeks gestation — may reflect chronic (pre-existing) hypertension rather than gestational hypertension; consider BP medication management."
+    : "";
+  if (sys >= 160 || dia >= 110) {
+    return {
+      tier: "urgent",
+      note: "≥160/110 — severe pre-eclampsia range, medical emergency. Please seek care now.",
+      providerNote: `≥160/110 — severe pre-eclampsia range, medical emergency.${chronicNote}`,
+      source: "ACOG",
+    };
+  }
+  if (sys >= 140 || dia >= 90) {
+    return {
+      tier: "monitor",
+      note: "≥140/90 — monitor for pre-eclampsia; confirm with a repeat reading 4+ hours apart.",
+      providerNote: `≥140/90 — monitor for pre-eclampsia; confirm with repeat reading 4+ hrs apart. Consider ordering weekly pre-eclampsia labs (CHAP panel).${chronicNote}`,
+      source: "ACOG",
+    };
+  }
+  return { tier: "normal", note: "Within expected range", providerNote: "Within expected range", source: "ACOG" };
 }
-function evalEPDS(score) {
-  if (score >= 10) return { tier: "monitor", note: "EPDS ≥10 — positive screen for depression/anxiety risk", source: "Edinburgh Postnatal Depression Scale" };
-  return { tier: "normal", note: "Below screening threshold", source: "Edinburgh Postnatal Depression Scale" };
+
+/* ---------- symptoms layered on top of raw BP ----------
+   Product decision: a single symptom alone does not escalate a clearly
+   normal BP reading. It takes 2+ symptoms, or 1 symptom plus a borderline
+   reading (sys 130-139 or dia 85-89), to flag for review — meant to catch
+   atypical/normotensive pre-eclampsia without over-alerting on one symptom.
+------------------------------------------------------------------------- */
+const PREECLAMPSIA_SYMPTOMS = ["swelling", "visualDisturbance", "suddenWeightGain"];
+function evalPreeclampsia(bp, symptoms, bpOpts) {
+  const relevant = PREECLAMPSIA_SYMPTOMS.filter((s) => symptoms.includes(s));
+  if (bp) {
+    const bpResult = evalBP(bp.sys, bp.dia, bpOpts);
+    if (bpResult.tier !== "normal") return bpResult;
+    const borderline = bp.sys >= 130 || bp.dia >= 85;
+    if (relevant.length >= 2 || (relevant.length === 1 && borderline)) {
+      return {
+        tier: "monitor",
+        note: `${relevant.map(labelize).join(", ")} reported with BP ${bp.sys}/${bp.dia} — flagged for review even though BP is subthreshold.`,
+        providerNote: `Symptom(s) ${relevant.map(labelize).join(", ")} + borderline BP ${bp.sys}/${bp.dia} — possible atypical/normotensive pre-eclampsia per ACOG; recommend follow-up.`,
+        source: "ACOG",
+      };
+    }
+    return bpResult;
+  }
+  if (relevant.length >= 2) {
+    return {
+      tier: "monitor",
+      note: `${relevant.map(labelize).join(", ")} reported — flagged for review (no BP entered this check-in).`,
+      providerNote: `Multiple pre-eclampsia symptoms (${relevant.map(labelize).join(", ")}) reported without a BP reading — recommend BP check and follow-up.`,
+      source: "ACOG",
+    };
+  }
+  return null;
 }
-function evalWound(symptoms) {
+
+/* ---------- fetal movement (kick count) ----------
+   <10 movements in 2 hours is the standard threshold for immediate
+   evaluation (Count the Kicks / ACOG fetal-movement guidance).
+------------------------------------------------------------------------- */
+function evalKickCount(count) {
+  if (count === "" || count === null || count === undefined) return null;
+  const n = Number(count);
+  if (n < 10) {
+    return {
+      tier: "urgent",
+      note: "Fewer than 10 movements in 2 hours — please contact your care team or seek care now.",
+      providerNote: "Kick count <10 in 2 hrs — recommend immediate evaluation (NST/BPP) per standard fetal movement guidance.",
+      source: "Count the Kicks / ACOG",
+    };
+  }
+  return { tier: "normal", note: `${n} movements in 2 hrs — within expected range`, providerNote: `${n} movements in 2 hrs — within expected range`, source: "Count the Kicks / ACOG" };
+}
+
+/* ---------- BP trend across recent readings ----------
+   Flags a rising trend even when every individual reading is subthreshold.
+   Window/threshold are a reasonable default (last up to 4 readings,
+   >=15 systolic or >=10 diastolic rise) — adjust if your team has a
+   different rule of thumb.
+------------------------------------------------------------------------- */
+function evalBPTrend(bpHistory) {
+  if (!bpHistory || bpHistory.length < 3) return null;
+  const recent = bpHistory.slice(-4);
+  const first = recent[0], last = recent[recent.length - 1];
+  const sysDelta = last.sys - first.sys;
+  const diaDelta = last.dia - first.dia;
+  if (sysDelta < 15 && diaDelta < 10) return null;
+  if (evalBP(last.sys, last.dia).tier !== "normal") return null; // already flagged by the reading itself
+  return {
+    tier: "monitor",
+    note: `Your blood pressure has been trending upward over your last ${recent.length} readings (${first.sys}/${first.dia} → ${last.sys}/${last.dia}). Your care team has been notified.`,
+    providerNote: `BP trending upward over last ${recent.length} readings (${first.sys}/${first.dia} → ${last.sys}/${last.dia}) though individually subthreshold — flagged per rising-trend criterion.`,
+    source: "ACOG",
+  };
+}
+
+function evalEPDS(score, anxietyScore = 0, selfHarm = false) {
+  if (selfHarm) {
+    return {
+      tier: "urgent",
+      note: "Thank you for sharing that. Please reach out to your care team right away, or call/text 988 if you need to talk to someone now.",
+      providerNote: "Item 10 endorsed — thoughts of self-harm reported; alert for immediate psych consult.",
+      source: "Edinburgh Postnatal Depression Scale",
+    };
+  }
+  if (score >= 10) {
+    return {
+      tier: "monitor",
+      note: `Your responses suggest you may be experiencing some depression${anxietyScore >= 6 ? " and anxiety" : ""} symptoms. Your care team has been notified.`,
+      providerNote: `EPDS ${score}/30 — positive screen for depression${anxietyScore >= 6 ? " and anxiety" : ""}; alert for psych consult/PCP follow-up.`,
+      source: "Edinburgh Postnatal Depression Scale",
+    };
+  }
+  if (anxietyScore >= 6) {
+    return {
+      tier: "monitor",
+      note: "Your responses suggest some anxiety symptoms. Your care team has been notified.",
+      providerNote: `Anxiety subscale ${anxietyScore}/9 elevated (items 3–5); alert for psych consult/PCP follow-up.`,
+      source: "Edinburgh Postnatal Depression Scale",
+    };
+  }
+  return { tier: "normal", note: "Below screening threshold", providerNote: "Below screening threshold", source: "Edinburgh Postnatal Depression Scale" };
+}
+function daysBetween(aISO, bISO) {
+  return Math.abs((new Date(aISO) - new Date(bISO)) / 86400000);
+}
+function evalWound(symptoms, pain, prevPain) {
   const flags = ["redness", "discharge", "warmth", "fever"].filter((s) => symptoms.includes(s));
-  if (flags.length >= 2) return { tier: "urgent", note: "Multiple wound-infection signs present", source: "Cleveland Clinic" };
-  if (flags.length === 1) return { tier: "monitor", note: "One wound-infection sign present — track closely", source: "Cleveland Clinic" };
-  return { tier: "normal", note: "No infection signs reported", source: "Cleveland Clinic" };
+  let tier = flags.length >= 2 ? "urgent" : flags.length === 1 ? "monitor" : "normal";
+  const increasing = pain != null && prevPain != null && pain - prevPain >= 2;
+  const highPain = pain != null && pain >= 7;
+  if ((increasing || highPain) && tier === "normal") tier = "monitor";
+
+  const bits = [];
+  if (flags.length >= 2) bits.push("Multiple wound-infection signs present");
+  else if (flags.length === 1) bits.push("One wound-infection sign present — track closely");
+  else bits.push("No infection signs reported");
+  if (increasing) bits.push(`pain has increased from ${prevPain} to ${pain} since your last check-in`);
+  else if (highPain) bits.push(`pain scale is high (${pain}/10)`);
+
+  return {
+    tier,
+    note: bits.join("; "),
+    providerNote: tier === "normal" ? bits.join("; ") : `${bits.join("; ")}. Review uploaded wound photo (if provided) for infection signs.`,
+    source: "Cleveland Clinic",
+  };
 }
 function evalVTE(symptoms) {
-  if (symptoms.includes("chestPain")) return { tier: "urgent", note: "Chest pain reported — possible pulmonary embolism, emergency", source: "American Heart Association" };
-  if (symptoms.includes("calfPain")) return { tier: "monitor", note: "Calf pain/swelling reported — monitor for DVT", source: "American Heart Association" };
-  return { tier: "normal", note: "No VTE symptoms reported", source: "American Heart Association" };
+  if (symptoms.includes("chestPain")) {
+    return {
+      tier: "urgent",
+      note: "Chest pain reported — this can indicate a blood clot in the lungs. Please seek emergency care now.",
+      providerNote: "Chest pain reported — possible pulmonary embolism; emergency, do not delay evaluation.",
+      source: "American Heart Association",
+    };
+  }
+  if (symptoms.includes("calfPain")) {
+    return {
+      tier: "monitor",
+      note: "Calf pain/swelling reported — your care team has been notified to monitor for a blood clot (DVT).",
+      providerNote: "Calf pain/swelling reported — monitor for DVT; recommend ordering a venous Doppler ultrasound.",
+      source: "American Heart Association",
+    };
+  }
+  return { tier: "normal", note: "No VTE symptoms reported", providerNote: "No VTE symptoms reported", source: "American Heart Association" };
 }
+
+/* ---------- postpartum symptom monitoring: bleeding, burning urination ---------- */
+function evalPostpartumSymptoms(symptoms) {
+  const notes = [];
+  const providerNotes = [];
+  if (symptoms.includes("bleeding")) {
+    notes.push("Report any increase in bleeding, or soaking a pad within an hour, to your care team right away.");
+    providerNotes.push("Patient reports vaginal bleeding — assess for postpartum hemorrhage (pad saturation, clots, vitals).");
+  }
+  if (symptoms.includes("burningUrination")) {
+    notes.push("Burning with urination can indicate a urinary tract infection — your care team has been notified.");
+    providerNotes.push("Burning urination reported — possible UTI; consider urinalysis/urine culture.");
+  }
+  if (!notes.length) {
+    return { tier: "normal", note: "No bleeding or urinary symptoms reported", providerNote: "No bleeding or urinary symptoms reported", source: "Cleveland Clinic" };
+  }
+  return { tier: "monitor", note: notes.join(" "), providerNote: providerNotes.join(" "), source: "Cleveland Clinic" };
+}
+
+/* ---------- BP check-in cadence: postpartum days 3-10 -> 2x/day, days 11-24 -> 1x/day ---------- */
+function bpCadencePhase(daysSincePostpartum) {
+  if (daysSincePostpartum == null) return null;
+  if (daysSincePostpartum >= 3 && daysSincePostpartum <= 10) return { required: 2, label: "twice daily (postpartum day 3–10)" };
+  if (daysSincePostpartum > 10 && daysSincePostpartum <= 24) return { required: 1, label: "once daily (postpartum day 11–24)" };
+  return null;
+}
+
+/* ---------- nutrition (data points: supplements, restrictions, breastfeeding, anemia, current diet) ---------- */
+const ACOG_NUTRITION_URL = "https://www.acog.org/womens-health/faqs/healthy-eating-during-pregnancy";
+const SUPPLEMENT_OPTIONS = ["Prenatal vitamin", "Folic acid", "Iron", "Calcium", "Vitamin D", "DHA/Omega-3", "Iodine"];
+const DIET_RESTRICTION_OPTIONS = ["Vegetarian", "Vegan", "Gluten-free", "Dairy-free", "Low-sodium", "Diabetic diet"];
+
+function evalNutrition(current, previous) {
+  if (!current) return null;
+  const dietChanged = !!previous && (
+    (current.dietDescription || "").trim() !== (previous.dietDescription || "").trim() ||
+    JSON.stringify([...(current.dietRestrictions || [])].sort()) !== JSON.stringify([...(previous.dietRestrictions || [])].sort())
+  );
+  if (dietChanged) {
+    return { tier: "monitor", note: "Diet has changed since last check-in — flagged for care team review", providerNote: "Diet has changed since last check-in — flagged for care team review", source: "ACOG Guidelines for Healthy Eating", url: ACOG_NUTRITION_URL };
+  }
+  return { tier: "normal", note: "No diet changes since last check-in", providerNote: "No diet changes since last check-in", source: "ACOG Guidelines for Healthy Eating", url: ACOG_NUTRITION_URL };
+}
+
+function nutritionRecommendations(nutrition, patient) {
+  const recs = [];
+  const restrictions = nutrition.dietRestrictions || [];
+  if (patient.phase === "post-term" && nutrition.breastfeeding) {
+    recs.push("Breastfeeding increases iron and calcium needs — aim for an extra 450–500 kcal/day from nutrient-dense sources.");
+  }
+  if (nutrition.anemia) {
+    recs.push("Anemia reported — prioritize iron-rich foods (lean red meat, lentils, spinach) paired with vitamin C for absorption.");
+  }
+  if (restrictions.includes("Vegetarian") || restrictions.includes("Vegan")) {
+    recs.push("Plant-based diet — watch B12, iron, choline, and omega-3 intake; fortified foods or supplements can help close the gap.");
+  }
+  if (!recs.length) {
+    recs.push("Folic acid, iron, calcium, iodine, and choline remain priority nutrients this trimester.");
+  }
+  return recs;
+}
+
+function supplementReminders(nutrition, patient) {
+  const supplements = nutrition.supplements || [];
+  const reminders = [];
+  if (!supplements.includes("Prenatal vitamin")) reminders.push("Prenatal vitamin — covers folic acid, iodine, and choline");
+  if (nutrition.anemia && !supplements.includes("Iron")) reminders.push("Iron supplement — recommended given reported anemia");
+  if (patient.phase === "post-term" && nutrition.breastfeeding && !supplements.includes("Calcium")) reminders.push("Calcium supplement — recommended while breastfeeding");
+  return reminders;
+}
+
+/* ---------- EPDS (Edinburgh Postnatal Depression Scale, 10 items) ----------
+   Scoring: total >=10 is a positive screen. Items 3/4/5 form the anxiety
+   subscale (EPDS-3A); >=6 flags anxiety even when the total is <10.
+   Item 10 (self-harm ideation) is a standalone safety flag regardless of total.
+   Source: https://perinatology.com/calculators/Edinburgh%20Depression%20Scale.htm
+------------------------------------------------------------------------- */
+const EPDS_QUESTIONS = [
+  { text: "I have been able to laugh and see the funny side of things", options: ["As much as I always could", "Not quite so much now", "Definitely not so much now", "Not at all"] },
+  { text: "I have looked forward with enjoyment to things", options: ["As much as I ever did", "Rather less than I used to", "Definitely less than I used to", "Hardly at all"] },
+  { text: "I have blamed myself unnecessarily when things went wrong", anxiety: true, options: ["No, never", "Not very often", "Yes, some of the time", "Yes, most of the time"] },
+  { text: "I have been anxious or worried for no good reason", anxiety: true, options: ["No, not at all", "Hardly ever", "Yes, sometimes", "Yes, very often"] },
+  { text: "I have felt scared or panicky for no very good reason", anxiety: true, options: ["No, not at all", "No, not much", "Yes, sometimes", "Yes, quite a lot"] },
+  { text: "Things have been getting on top of me", options: ["No, I have been coping as well as ever", "No, most of the time I have coped quite well", "Yes, sometimes I haven't been coping as well as usual", "Yes, most of the time I haven't been able to cope at all"] },
+  { text: "I have been so unhappy that I have had difficulty sleeping", options: ["No, not at all", "Not very often", "Yes, sometimes", "Yes, most of the time"] },
+  { text: "I have felt sad or miserable", options: ["No, not at all", "Not very often", "Yes, quite often", "Yes, most of the time"] },
+  { text: "I have been so unhappy that I have been crying", options: ["No, never", "Only occasionally", "Yes, quite often", "Yes, most of the time"] },
+  { text: "The thought of harming myself has occurred to me", selfHarm: true, options: ["Never", "Hardly ever", "Sometimes", "Yes, quite often"] },
+];
+const MINDFULNESS_TIPS = [
+  "Try a short breathing exercise: in for 4 counts, hold for 4, out for 6.",
+  "Step outside for a few minutes of daylight and fresh air today.",
+  "Grounding exercise: name 5 things you see, 4 you hear, 3 you can touch.",
+  "It's okay to ask someone to hold the baby so you can rest for 10 minutes.",
+  "Write down one small thing that felt okay today.",
+];
 
 const TIER_COLOR = { normal: "#4B8B6F", monitor: "#C08A2E", urgent: "#B23A2E" };
 const TIER_LABEL = { normal: "Normal", monitor: "Monitor", urgent: "Urgent" };
@@ -61,10 +309,10 @@ function worstTier(tiers) {
 /* ---------- seed demo data ---------- */
 function seedData() {
   const patients = [
-    { id: "p1", name: "Maria Alvarez", phase: "pre-term", weekOrDay: 32, deliveryType: null, dueDate: dayISO(addDays(TODAY, 56)) },
-    { id: "p2", name: "Jade Whitfield", phase: "post-term", weekOrDay: 6, deliveryType: "C-section", dueDate: dayISO(addDays(TODAY, -42)) },
-    { id: "p3", name: "Priya Nair", phase: "pre-term", weekOrDay: 38, deliveryType: null, dueDate: dayISO(addDays(TODAY, 14)) },
-    { id: "p4", name: "Sam Okafor", phase: "post-term", weekOrDay: 35, deliveryType: "Vaginal", dueDate: dayISO(addDays(TODAY, -245)) },
+    { id: "p1", name: "Maria Alvarez", phase: "pre-term", weekOrDay: 32, deliveryType: null, dueDate: dayISO(addDays(TODAY, 56)), htnHistory: false },
+    { id: "p2", name: "Jade Whitfield", phase: "post-term", weekOrDay: 6, deliveryType: "C-section", dueDate: dayISO(addDays(TODAY, -42)), psychHistory: true },
+    { id: "p3", name: "Priya Nair", phase: "pre-term", weekOrDay: 38, deliveryType: null, dueDate: dayISO(addDays(TODAY, 14)), htnHistory: true },
+    { id: "p4", name: "Samira Okafor", phase: "post-term", weekOrDay: 30, deliveryType: "Vaginal", dueDate: dayISO(addDays(TODAY, -245)) },
   ];
 
   const checkins = {
@@ -75,13 +323,17 @@ function seedData() {
         date: dayISO(addDays(TODAY, -14 + i * 2)),
         bp: { sys, dia }, weight: 152 + i * 0.4, kickCount: 12 - (i > 5 ? 3 : 0),
         symptoms: i > 5 ? ["swelling", "visualDisturbance"] : [],
+        ...(i === 0 ? { nutrition: { supplements: ["Prenatal vitamin"], dietRestrictions: [], anemia: false, dietDescription: "Balanced meals, occasional prenatal smoothie" } } : {}),
+        ...(i === 7 ? { nutrition: { supplements: ["Prenatal vitamin"], dietRestrictions: ["Vegetarian"], anemia: true, dietDescription: "Cut out meat this week, feeling low energy" } } : {}),
       };
     }),
     p2: Array.from({ length: 6 }).map((_, i) => ({
       date: dayISO(addDays(TODAY, -10 + i * 2)),
+      weight: 145 - i * 0.3,
       wound: { symptoms: i >= 4 ? ["redness", "warmth"] : [] , painScale: i >= 4 ? 6 : 2 },
       vte: { symptoms: [] },
-      epds: i === 5 ? { score: 12, date: dayISO(addDays(TODAY, -1)) } : null,
+      postSymptoms: i === 4 ? ["burningUrination"] : [],
+      epds: i === 5 ? { score: 12, anxietyScore: 7, selfHarm: false, date: dayISO(addDays(TODAY, -1)) } : null,
     })),
     p3: Array.from({ length: 5 }).map((_, i) => ({
       date: dayISO(addDays(TODAY, -8 + i * 2)),
@@ -92,23 +344,25 @@ function seedData() {
       date: dayISO(addDays(TODAY, -8 + i * 2)),
       wound: { symptoms: [], painScale: 1 },
       vte: { symptoms: i === 4 ? ["calfPain"] : [] },
-      epds: i === 2 ? { score: 6, date: dayISO(addDays(TODAY, -30)) } : null,
+      epds: i === 2 ? { score: 6, anxietyScore: 2, selfHarm: false, date: dayISO(addDays(TODAY, -30)) } : null,
+      ...(i === 3 ? { nutrition: { supplements: ["Prenatal vitamin", "Calcium"], dietRestrictions: [], anemia: false, breastfeeding: true, dietDescription: "Nursing every 2-3 hrs, eating extra dairy and lean protein" } } : {}),
     })),
   };
   return { patients, checkins };
 }
 
+const DEMO_DATA_KEY = "obgyn-demo-data-v4";
 async function loadDemoData() {
   try {
-    const r = await window.storage.get("obgyn-demo-data", true);
+    const r = await window.storage.get(DEMO_DATA_KEY, true);
     if (r?.value) return JSON.parse(r.value);
   } catch (e) { /* not found yet */ }
   const seeded = seedData();
-  try { await window.storage.set("obgyn-demo-data", JSON.stringify(seeded), true); } catch (e) {}
+  try { await window.storage.set(DEMO_DATA_KEY, JSON.stringify(seeded), true); } catch (e) {}
   return seeded;
 }
 async function saveDemoData(data) {
-  try { await window.storage.set("obgyn-demo-data", JSON.stringify(data), true); } catch (e) {}
+  try { await window.storage.set(DEMO_DATA_KEY, JSON.stringify(data), true); } catch (e) {}
 }
 
 /* ---------- gestational ruler (signature element) ---------- */
@@ -170,22 +424,59 @@ function Card({ children, style }) {
 }
 
 /* ---------- PATIENT VIEW ---------- */
-function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
+function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSetHtnHistory, onSwitch }) {
   const [bp, setBp] = useState({ sys: "", dia: "" });
+  const [weight, setWeight] = useState("");
   const [symptoms, setSymptoms] = useState([]);
   const [kick, setKick] = useState("");
   const [wound, setWound] = useState([]);
   const [pain, setPain] = useState(0);
+  const [woundPhoto, setWoundPhoto] = useState(null);
   const [vte, setVte] = useState([]);
+  const [postSymptoms, setPostSymptoms] = useState([]);
+  const [supplements, setSupplements] = useState([]);
+  const [dietRestrictions, setDietRestrictions] = useState([]);
+  const [anemia, setAnemia] = useState(false);
+  const [breastfeeding, setBreastfeeding] = useState(false);
+  const [dietDescription, setDietDescription] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [showEPDSForm, setShowEPDSForm] = useState(false);
+  const [editingEpds, setEditingEpds] = useState(null);
 
   const isPostSection = patient.phase === "post-term" && patient.deliveryType === "C-section";
+  const isPostTerm = patient.phase === "post-term";
   const daysSince = patient.phase === "post-term" ? patient.weekOrDay : null;
-  const showEPDS = daysSince && [30, 60, 180].some((d) => Math.abs(d - daysSince) <= 3);
+  const epdsHistory = (checkins || []).filter((c) => c.epds).map((c) => c.epds);
+  const latestEpds = epdsHistory[epdsHistory.length - 1];
+  const recentlyScreened = (checkins || []).some((c) => c.epds && daysBetween(c.epds.date, dayISO(TODAY)) < 14);
+  const showEPDS = daysSince && [30, 60, 180].some((d) => Math.abs(d - daysSince) <= 3) && !recentlyScreened;
 
-  const bpResult = bp.sys && bp.dia ? evalBP(Number(bp.sys), Number(bp.dia)) : null;
-  const woundResult = wound.length ? evalWound(wound) : null;
+  function handleEPDSComplete(result) {
+    onCompleteEPDS(result);
+    setShowEPDSForm(false);
+    setEditingEpds(null);
+  }
+
+  const bpVal = bp.sys && bp.dia ? { sys: Number(bp.sys), dia: Number(bp.dia) } : null;
+  const bpResult = (bpVal || symptoms.length) ? evalPreeclampsia(bpVal, symptoms, { weekOrDay: patient.weekOrDay, phase: patient.phase }) : null;
+  const kickResult = patient.phase === "pre-term" ? evalKickCount(kick) : null;
+  const woundHistory = (checkins || []).filter((c) => c.wound).map((c) => c.wound);
+  const prevPain = woundHistory.length ? woundHistory[woundHistory.length - 1].painScale : null;
+  const woundResult = isPostSection && (wound.length || pain > 0) ? evalWound(wound, pain, prevPain) : null;
   const vteResult = vte.length ? evalVTE(vte) : null;
+  const postpartumResult = isPostSection && postSymptoms.length ? evalPostpartumSymptoms(postSymptoms) : null;
+  const bpHistoryForTrend = (checkins || []).filter((c) => c.bp).map((c) => ({ date: c.date, sys: c.bp.sys, dia: c.bp.dia }));
+  const trendResult = evalBPTrend(bpHistoryForTrend);
+  const cadence = isPostTerm ? bpCadencePhase(daysSince) : null;
+  const todaysBpCount = (checkins || []).filter((c) => c.date === dayISO(TODAY) && c.bp).length;
+  const cadenceDue = cadence && todaysBpCount < cadence.required;
+
+  const nutritionHistory = (checkins || []).filter((c) => c.nutrition).map((c) => c.nutrition);
+  const lastNutrition = nutritionHistory[nutritionHistory.length - 1];
+  const nutritionInput = { supplements, dietRestrictions, anemia, breastfeeding: isPostTerm ? breastfeeding : undefined, dietDescription };
+  const nutritionResult = dietDescription.trim() ? evalNutrition(nutritionInput, lastNutrition) : null;
+  const nutritionRecs = nutritionRecommendations(nutritionInput, patient);
+  const nutritionReminders = supplementReminders(nutritionInput, patient);
 
   const chartData = (checkins || []).filter((c) => c.bp).map((c) => ({
     date: fmtDate(c.date), sys: c.bp.sys, dia: c.bp.dia,
@@ -195,21 +486,38 @@ function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
     setList(list.includes(key) ? list.filter((x) => x !== key) : [...list, key]);
   }
 
+  function handlePhoto(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setWoundPhoto(reader.result);
+    reader.readAsDataURL(file);
+  }
+
   function submit() {
+    const hasNutrition = dietDescription.trim() || supplements.length || dietRestrictions.length || anemia || (isPostTerm && breastfeeding);
     const entry = {
       date: dayISO(TODAY),
       ...(bp.sys && bp.dia ? { bp: { sys: Number(bp.sys), dia: Number(bp.dia) } } : {}),
+      ...(weight ? { weight: Number(weight) } : {}),
       ...(kick ? { kickCount: Number(kick) } : {}),
       ...(symptoms.length ? { symptoms } : {}),
-      ...(isPostSection ? { wound: { symptoms: wound, painScale: pain } } : {}),
+      ...(isPostSection ? { wound: { symptoms: wound, painScale: pain, ...(woundPhoto ? { photo: woundPhoto } : {}) } } : {}),
       ...(isPostSection ? { vte: { symptoms: vte } } : {}),
+      ...(isPostSection && postSymptoms.length ? { postSymptoms } : {}),
+      ...(hasNutrition
+        ? { nutrition: { supplements, dietRestrictions, anemia, ...(isPostTerm ? { breastfeeding } : {}), dietDescription: dietDescription.trim() } }
+        : {}),
     };
     onSubmitCheckin(entry);
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 2600);
   }
 
-  const worst = worstTier([bpResult?.tier, woundResult?.tier, vteResult?.tier].filter(Boolean));
+  const worst = worstTier([
+    bpResult?.tier, woundResult?.tier, vteResult?.tier, nutritionResult?.tier,
+    kickResult?.tier, postpartumResult?.tier, trendResult?.tier,
+  ].filter(Boolean));
 
   return (
     <div style={{ minHeight: "100vh", background: "#F4F6F1", fontFamily: "Inter, sans-serif", color: "#14231F" }}>
@@ -245,13 +553,32 @@ function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
 
         <Card style={{ marginTop: 14 }}>
           <SectionTitle icon={<Activity size={16} />} title="Blood pressure & symptoms" />
+          {patient.htnHistory === undefined ? (
+            <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "#f9f9f7", border: "1px solid #e7ece7" }}>
+              <div style={{ fontSize: 12.5, color: "#3d4a44" }}>Before your first check: do you have a history of high blood pressure or hypertension prior to this pregnancy?</div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => onSetHtnHistory(true)} style={{ ...primaryBtn, padding: "6px 14px", fontSize: 12.5 }}>Yes</button>
+                <button onClick={() => onSetHtnHistory(false)} style={{ ...primaryBtn, padding: "6px 14px", fontSize: 12.5, background: "#fff", color: "#2F6E68", border: "1px solid #2F6E68" }}>No</button>
+              </div>
+            </div>
+          ) : null}
+          {cadenceDue && (
+            <div style={{ marginTop: 10, fontSize: 12, color: "#C08A2E" }}>
+              BP check due: {todaysBpCount} of {cadence.required} today ({cadence.label})
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
             <input placeholder="Systolic" value={bp.sys} onChange={(e) => setBp({ ...bp, sys: e.target.value })} style={inputStyle} type="number" />
             <input placeholder="Diastolic" value={bp.dia} onChange={(e) => setBp({ ...bp, dia: e.target.value })} style={inputStyle} type="number" />
           </div>
+          <div style={{ marginTop: 10 }}>
+            <label style={labelStyle}>Weight (lbs)</label>
+            <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" style={{ ...inputStyle, width: 120 }} />
+          </div>
           {bpResult && <InlineNote result={bpResult} />}
+          {trendResult && <InlineNote result={trendResult} />}
           <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["swelling", "visualDisturbance", "suddenWeightGain", "burningUrination", "bleeding"].map((s) => (
+            {["swelling", "visualDisturbance", "suddenWeightGain"].map((s) => (
               <Chip key={s} label={labelize(s)} active={symptoms.includes(s)} onClick={() => toggle(symptoms, setSymptoms, s)} />
             ))}
           </div>
@@ -259,6 +586,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
             <div style={{ marginTop: 12 }}>
               <label style={labelStyle}>Kick count (last 2 hrs)</label>
               <input value={kick} onChange={(e) => setKick(e.target.value)} type="number" style={{ ...inputStyle, width: 100 }} />
+              {kickResult && <InlineNote result={kickResult} />}
             </div>
           )}
         </Card>
@@ -271,11 +599,15 @@ function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
                 <Chip key={s} label={labelize(s)} active={wound.includes(s)} onClick={() => toggle(wound, setWound, s)} />
               ))}
             </div>
-            <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 34, height: 34, borderRadius: 10, background: "#eef2ee", display: "flex", alignItems: "center", justifyContent: "center", color: "#5b6b64" }}>
-                <Camera size={16} />
-              </div>
-              <span style={{ fontSize: 12.5, color: "#5b6b64" }}>Photo upload (simulated in this prototype — routes to provider for manual review)</span>
+            <div style={{ marginTop: 10 }}>
+              <label style={labelStyle}>Wound photo</label>
+              <input type="file" accept="image/*" onChange={handlePhoto} style={{ fontSize: 12.5 }} />
+              {woundPhoto && (
+                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                  <img src={woundPhoto} alt="Wound preview" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 8, border: "1px solid #e7ece7" }} />
+                  <span style={{ fontSize: 12, color: "#5b6b64" }}>Attached — will be sent to your care team for review</span>
+                </div>
+              )}
             </div>
             <div style={{ marginTop: 12 }}>
               <label style={labelStyle}>Pain scale (0–10): {pain}</label>
@@ -288,6 +620,15 @@ function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
             </div>
             {woundResult && <InlineNote result={woundResult} />}
             {vteResult && <InlineNote result={vteResult} />}
+            <div style={{ marginTop: 12 }}>
+              <label style={labelStyle}>Other postpartum symptoms</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {["bleeding", "burningUrination"].map((s) => (
+                  <Chip key={s} label={labelize(s)} active={postSymptoms.includes(s)} onClick={() => toggle(postSymptoms, setPostSymptoms, s)} />
+                ))}
+              </div>
+              {postpartumResult && <InlineNote result={postpartumResult} />}
+            </div>
           </Card>
         )}
 
@@ -297,17 +638,78 @@ function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
             <p style={{ fontSize: 13.5, color: "#3d4a44", marginTop: 8 }}>
               It's time for your Edinburgh Postnatal Depression Scale (EPDS) screening. This takes about 2 minutes.
             </p>
-            <button style={primaryBtn}>Start screening</button>
+            <button onClick={() => setShowEPDSForm(true)} style={primaryBtn}>Start screening</button>
+          </Card>
+        )}
+
+        {latestEpds && (
+          <Card style={{ marginTop: 14 }}>
+            <SectionTitle icon={<Moon size={16} />} title="Your mental health screening" />
+            <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <TierBadge tier={evalEPDS(latestEpds.score, latestEpds.anxietyScore, latestEpds.selfHarm).tier} />
+              <span style={{ fontSize: 12.5, color: "#5b6b64" }}>{fmtDate(latestEpds.date)} · Score {latestEpds.score}/30</span>
+            </div>
+            <button
+              onClick={() => setEditingEpds(latestEpds)}
+              style={{ ...primaryBtn, marginTop: 12, background: "#fff", color: "#2F6E68", border: "1px solid #2F6E68" }}
+            >
+              Edit answers
+            </button>
           </Card>
         )}
 
         <Card style={{ marginTop: 14 }}>
-          <SectionTitle icon={<Utensils size={16} />} title="Today's nutrition tip" />
-          <p style={{ fontSize: 13.5, color: "#3d4a44", marginTop: 8 }}>
-            {patient.phase === "post-term" && patient.deliveryType
-              ? "Breastfeeding increases iron and calcium needs — aim for an extra 450–500 kcal/day from nutrient-dense sources."
-              : "Folic acid, iron, calcium, iodine, and choline remain priority nutrients this trimester. Consider a short walk after meals to support blood sugar."}
-          </p>
+          <SectionTitle icon={<Utensils size={16} />} title="Nutrition & supplements" />
+          <div style={{ marginTop: 10 }}>
+            <label style={labelStyle}>Current supplements</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {SUPPLEMENT_OPTIONS.map((s) => (
+                <Chip key={s} label={s} active={supplements.includes(s)} onClick={() => toggle(supplements, setSupplements, s)} />
+              ))}
+            </div>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Dietary restrictions</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {DIET_RESTRICTION_OPTIONS.map((d) => (
+                <Chip key={d} label={d} active={dietRestrictions.includes(d)} onClick={() => toggle(dietRestrictions, setDietRestrictions, d)} />
+              ))}
+            </div>
+          </div>
+          <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <Chip label="Anemia" active={anemia} onClick={() => setAnemia((a) => !a)} />
+            {isPostTerm && (
+              <Chip label="Currently breastfeeding" active={breastfeeding} onClick={() => setBreastfeeding((b) => !b)} />
+            )}
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Current diet (brief notes)</label>
+            <textarea
+              value={dietDescription}
+              onChange={(e) => setDietDescription(e.target.value)}
+              placeholder="e.g. typical meals, any recent changes"
+              rows={2}
+              style={{ ...inputStyle, width: "100%", fontFamily: "Inter, sans-serif", resize: "vertical" }}
+            />
+          </div>
+          {nutritionResult && <InlineNote result={nutritionResult} />}
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid #eef2ee" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#5b6b64", marginBottom: 6 }}>Tailored recommendations</div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#3d4a44", display: "flex", flexDirection: "column", gap: 4 }}>
+              {nutritionRecs.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+          </div>
+          {nutritionReminders.length > 0 && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #eef2ee" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#5b6b64", marginBottom: 6 }}>Supplement reminders</div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#3d4a44", display: "flex", flexDirection: "column", gap: 4 }}>
+                {nutritionReminders.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            </div>
+          )}
+          <div style={{ marginTop: 12, fontSize: 11, color: "#8a9791" }}>
+            Source: <a href={ACOG_NUTRITION_URL} target="_blank" rel="noreferrer" style={{ color: "#8a9791" }}>ACOG Guidelines for Healthy Eating</a>
+          </div>
         </Card>
 
         {chartData.length > 1 && (
@@ -333,6 +735,14 @@ function PatientView({ patient, checkins, onSubmitCheckin, onSwitch }) {
           {submitted ? "Check-in saved ✓" : "Submit today's check-in"}
         </button>
       </div>
+      {(showEPDSForm || editingEpds) && (
+        <EPDSScreening
+          patient={patient}
+          existingEpds={editingEpds}
+          onComplete={handleEPDSComplete}
+          onCancel={() => { setShowEPDSForm(false); setEditingEpds(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -348,7 +758,15 @@ function InlineNote({ result }) {
   return (
     <div style={{ marginTop: 10, fontSize: 12.5, color: TIER_COLOR[result.tier], display: "flex", gap: 6, alignItems: "flex-start" }}>
       <span style={{ marginTop: 2 }}>●</span>
-      <span>{result.note} <span style={{ color: "#8a9791" }}>— {result.source}</span></span>
+      <span>
+        {result.note}{" "}
+        <span style={{ color: "#8a9791" }}>
+          —{" "}
+          {result.url
+            ? <a href={result.url} target="_blank" rel="noreferrer" style={{ color: "#8a9791" }}>{result.source}</a>
+            : result.source}
+        </span>
+      </span>
     </div>
   );
 }
@@ -368,6 +786,128 @@ const inputStyle = { flex: 1, padding: "10px 12px", borderRadius: 8, border: "1p
 const labelStyle = { fontSize: 12.5, color: "#5b6b64", display: "block", marginBottom: 4 };
 const primaryBtn = { background: "#2F6E68", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 13.5, cursor: "pointer" };
 
+/* ---------- EPDS screening flow ---------- */
+const overlayStyle = {
+  position: "fixed", inset: 0, background: "rgba(15,42,46,0.55)", display: "flex",
+  alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50, fontFamily: "Inter, sans-serif"
+};
+
+function EPDSScreening({ patient, existingEpds, onComplete, onCancel }) {
+  const needsBaseline = !existingEpds && (patient.psychHistory === undefined || patient.psychHistory === null);
+  const [step, setStep] = useState(needsBaseline ? "baseline" : "questions");
+  const [psychHistory, setPsychHistoryLocal] = useState(null);
+  const [answers, setAnswers] = useState(
+    existingEpds?.answers ? [...existingEpds.answers] : Array(EPDS_QUESTIONS.length).fill(null)
+  );
+  const [result, setResult] = useState(null);
+
+  const allAnswered = answers.every((a) => a !== null);
+
+  function submitAnswers() {
+    const score = answers.reduce((sum, a) => sum + a, 0);
+    const anxietyScore = EPDS_QUESTIONS.reduce((sum, q, i) => sum + (q.anxiety ? answers[i] : 0), 0);
+    const selfHarm = answers[9] > 0;
+    const epds = { date: existingEpds ? existingEpds.date : dayISO(TODAY), score, anxietyScore, selfHarm, answers };
+    setResult({ epds, evalResult: evalEPDS(score, anxietyScore, selfHarm) });
+    setStep("result");
+  }
+
+  if (step === "baseline") {
+    return (
+      <div style={overlayStyle}>
+        <Card style={{ maxWidth: 480, width: "100%" }}>
+          <SectionTitle icon={<ClipboardList size={16} />} title="Before we start" />
+          <p style={{ fontSize: 13.5, color: "#3d4a44", marginTop: 8 }}>
+            Do you have a history of depression, anxiety, or another mental health diagnosis prior to this pregnancy?
+          </p>
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <button onClick={() => { setPsychHistoryLocal(true); setStep("questions"); }} style={{ ...primaryBtn, flex: 1 }}>Yes</button>
+            <button onClick={() => { setPsychHistoryLocal(false); setStep("questions"); }} style={{ ...primaryBtn, flex: 1, background: "#fff", color: "#2F6E68", border: "1px solid #2F6E68" }}>No</button>
+          </div>
+          <button onClick={onCancel} style={{ marginTop: 14, border: "none", background: "none", color: "#5b6b64", fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+        </Card>
+      </div>
+    );
+  }
+
+  if (step === "questions") {
+    return (
+      <div style={overlayStyle}>
+        <Card style={{ maxWidth: 560, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+          <SectionTitle icon={<Moon size={16} />} title={existingEpds ? "Edit your EPDS answers" : "Edinburgh Postnatal Depression Scale"} />
+          <p style={{ fontSize: 12.5, color: "#5b6b64", marginTop: 6 }}>
+            {existingEpds ? "Update any answers below, then save your changes." : "Choose the answer that comes closest to how you have felt in the past 7 days."}
+          </p>
+          {existingEpds && !existingEpds.answers && (
+            <p style={{ fontSize: 12, color: "#B5566B", marginTop: 6 }}>
+              Your original answers weren't saved individually — please re-answer each question to update your results.
+            </p>
+          )}
+          {EPDS_QUESTIONS.map((q, i) => (
+            <div key={i} style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600 }}>{i + 1}. {q.text}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                {q.options.map((opt, score) => (
+                  <label key={score} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name={`epds-${i}`}
+                      checked={answers[i] === score}
+                      onChange={() => setAnswers((a) => a.map((v, idx) => (idx === i ? score : v)))}
+                    />
+                    {opt}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 20 }}>
+            <button onClick={onCancel} style={{ border: "none", background: "none", color: "#5b6b64", fontSize: 13, cursor: "pointer" }}>Cancel</button>
+            <button
+              onClick={submitAnswers}
+              disabled={!allAnswered}
+              style={{ ...primaryBtn, flex: 1, opacity: allAnswered ? 1 : 0.5, cursor: allAnswered ? "pointer" : "not-allowed" }}
+            >
+              {existingEpds ? "Save changes" : "Submit screening"}
+            </button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  const { epds, evalResult } = result;
+  return (
+    <div style={overlayStyle}>
+      <Card style={{ maxWidth: 480, width: "100%" }}>
+        <SectionTitle
+          icon={evalResult.tier === "urgent" ? <AlertTriangle size={16} /> : evalResult.tier === "monitor" ? <ShieldAlert size={16} /> : <CheckCircle2 size={16} />}
+          title={existingEpds ? "Changes saved" : "Screening complete"}
+        />
+        <div style={{ marginTop: 10 }}><TierBadge tier={evalResult.tier} /></div>
+        <div style={{ marginTop: 10, fontSize: 13.5, color: "#3d4a44" }}>{evalResult.note}</div>
+        {evalResult.tier !== "normal" && (
+          <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: evalResult.tier === "urgent" ? "#fbeae7" : "#faf1de", fontSize: 13 }}>
+            Your care team has been notified and will reach out about scheduling a psych consult or PCP follow-up.
+          </div>
+        )}
+        <div style={{ marginTop: 16 }}>
+          <SectionTitle icon={<Moon size={16} />} title="A few things that can help" />
+          <ul style={{ marginTop: 8, paddingLeft: 18, fontSize: 13, color: "#3d4a44", display: "flex", flexDirection: "column", gap: 6 }}>
+            {MINDFULNESS_TIPS.slice(0, 3).map((tip, i) => <li key={i}>{tip}</li>)}
+          </ul>
+        </div>
+        <button
+          onClick={() => onComplete({ psychHistory, epds, editingDate: existingEpds ? existingEpds.date : undefined })}
+          style={{ ...primaryBtn, width: "100%", marginTop: 18 }}
+        >
+          Done
+        </button>
+      </Card>
+    </div>
+  );
+}
+
 /* ---------- PROVIDER VIEW ---------- */
 function ProviderView({ patients, checkins, onSwitch }) {
   const [selected, setSelected] = useState(null);
@@ -376,11 +916,27 @@ function ProviderView({ patients, checkins, onSwitch }) {
     const cIns = checkins[p.id] || [];
     const latest = cIns[cIns.length - 1];
     const tiers = [];
-    if (latest?.bp) tiers.push(evalBP(latest.bp.sys, latest.bp.dia).tier);
-    if (latest?.wound) tiers.push(evalWound(latest.wound.symptoms).tier);
+    const bpHistory = cIns.filter((c) => c.bp).map((c) => ({ date: c.date, sys: c.bp.sys, dia: c.bp.dia }));
+    if (latest?.bp || latest?.symptoms?.length) {
+      const bpVal = latest?.bp ? { sys: latest.bp.sys, dia: latest.bp.dia } : null;
+      const pre = evalPreeclampsia(bpVal, latest?.symptoms || [], { weekOrDay: p.weekOrDay, phase: p.phase });
+      if (pre) tiers.push(pre.tier);
+    }
+    const trend = evalBPTrend(bpHistory);
+    if (trend) tiers.push(trend.tier);
+    if (latest?.kickCount != null) { const k = evalKickCount(latest.kickCount); if (k) tiers.push(k.tier); }
+    if (latest?.wound) {
+      const woundHist = cIns.filter((c) => c.wound).map((c) => c.wound.painScale);
+      const prevPain = woundHist.length > 1 ? woundHist[woundHist.length - 2] : null;
+      tiers.push(evalWound(latest.wound.symptoms, latest.wound.painScale, prevPain).tier);
+    }
     if (latest?.vte) tiers.push(evalVTE(latest.vte.symptoms).tier);
-    const epdsEntry = cIns.find((c) => c.epds)?.epds;
-    if (epdsEntry) tiers.push(evalEPDS(epdsEntry.score).tier);
+    if (latest?.postSymptoms?.length) tiers.push(evalPostpartumSymptoms(latest.postSymptoms).tier);
+    const epdsEntries = cIns.filter((c) => c.epds).map((c) => c.epds);
+    const epdsEntry = epdsEntries[epdsEntries.length - 1];
+    if (epdsEntry) tiers.push(evalEPDS(epdsEntry.score, epdsEntry.anxietyScore, epdsEntry.selfHarm).tier);
+    const nutritionEntries = cIns.filter((c) => c.nutrition).map((c) => c.nutrition);
+    if (nutritionEntries.length) tiers.push(evalNutrition(nutritionEntries[nutritionEntries.length - 1], nutritionEntries[nutritionEntries.length - 2]).tier);
     return { ...p, tier: worstTier(tiers), latest, epdsEntry };
   }).sort((a, b) => (a.tier === b.tier ? 0 : a.tier === "urgent" ? -1 : b.tier === "urgent" ? 1 : a.tier === "monitor" ? -1 : 1)),
   [patients, checkins]);
@@ -434,12 +990,41 @@ function ProviderView({ patients, checkins, onSwitch }) {
 function PatientDetail({ patient, checkins, onClose }) {
   const bpData = checkins.filter((c) => c.bp).map((c) => ({ date: fmtDate(c.date), sys: c.bp.sys, dia: c.bp.dia }));
   const latest = checkins[checkins.length - 1];
+  const bpHistory = checkins.filter((c) => c.bp).map((c) => ({ date: c.date, sys: c.bp.sys, dia: c.bp.dia }));
   const reasons = [];
-  if (latest?.bp) { const r = evalBP(latest.bp.sys, latest.bp.dia); if (r.tier !== "normal") reasons.push({ label: "Blood pressure", ...r }); }
-  if (latest?.wound?.symptoms?.length) { const r = evalWound(latest.wound.symptoms); if (r.tier !== "normal") reasons.push({ label: "Wound check", ...r }); }
+  if (latest?.bp || latest?.symptoms?.length) {
+    const bpVal = latest?.bp ? { sys: latest.bp.sys, dia: latest.bp.dia } : null;
+    const pre = evalPreeclampsia(bpVal, latest?.symptoms || [], { weekOrDay: patient.weekOrDay, phase: patient.phase });
+    if (pre && pre.tier !== "normal") reasons.push({ label: "Blood pressure / pre-eclampsia risk", ...pre });
+  }
+  const trend = evalBPTrend(bpHistory);
+  if (trend) reasons.push({ label: "Blood pressure trend", ...trend });
+  if (latest?.kickCount != null) {
+    const k = evalKickCount(latest.kickCount);
+    if (k && k.tier !== "normal") reasons.push({ label: "Fetal movement (kick count)", ...k });
+  }
+  if (latest?.wound) {
+    const woundHist = checkins.filter((c) => c.wound).map((c) => c.wound.painScale);
+    const prevPain = woundHist.length > 1 ? woundHist[woundHist.length - 2] : null;
+    const r = evalWound(latest.wound.symptoms, latest.wound.painScale, prevPain);
+    if (r.tier !== "normal") reasons.push({ label: "Wound check", ...r });
+  }
   if (latest?.vte?.symptoms?.length) { const r = evalVTE(latest.vte.symptoms); if (r.tier !== "normal") reasons.push({ label: "VTE screen", ...r }); }
-  const epds = checkins.find((c) => c.epds)?.epds;
-  if (epds) { const r = evalEPDS(epds.score); if (r.tier !== "normal") reasons.push({ label: "Mental health (EPDS)", ...r, note: `Score ${epds.score} — ${r.note}` }); }
+  if (latest?.postSymptoms?.length) { const r = evalPostpartumSymptoms(latest.postSymptoms); if (r.tier !== "normal") reasons.push({ label: "Bleeding / urinary symptoms", ...r }); }
+  const epdsEntries = checkins.filter((c) => c.epds).map((c) => c.epds);
+  const epds = epdsEntries[epdsEntries.length - 1];
+  if (epds) { const r = evalEPDS(epds.score, epds.anxietyScore, epds.selfHarm); if (r.tier !== "normal") reasons.push({ label: "Mental health (EPDS)", ...r }); }
+  const nutritionEntries = checkins.filter((c) => c.nutrition).map((c) => c.nutrition);
+  if (nutritionEntries.length) {
+    const r = evalNutrition(nutritionEntries[nutritionEntries.length - 1], nutritionEntries[nutritionEntries.length - 2]);
+    if (r.tier !== "normal") reasons.push({ label: "Nutrition", ...r });
+  }
+
+  const weights = checkins.filter((c) => c.weight != null).map((c) => c.weight);
+  const weightNow = weights[weights.length - 1];
+  const weightPrev = weights[weights.length - 2];
+  const woundPhotos = checkins.filter((c) => c.wound?.photo).map((c) => ({ date: c.date, photo: c.wound.photo }));
+  const latestWoundPhoto = woundPhotos[woundPhotos.length - 1];
 
   return (
     <div style={{ flex: 1 }}>
@@ -450,6 +1035,21 @@ function PatientDetail({ patient, checkins, onClose }) {
             <div style={{ fontSize: 13, color: "#5b6b64", marginTop: 2 }}>
               {patient.phase === "pre-term" ? `Week ${patient.weekOrDay} of pregnancy` : `Day ${patient.weekOrDay} postpartum`} {patient.deliveryType ? `· ${patient.deliveryType} delivery` : ""}
             </div>
+            {patient.psychHistory && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "#B5566B", display: "flex", alignItems: "center", gap: 4 }}>
+                <ShieldAlert size={12} /> PMH: prior psychiatric history noted
+              </div>
+            )}
+            {patient.htnHistory && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "#B5566B", display: "flex", alignItems: "center", gap: 4 }}>
+                <ShieldAlert size={12} /> PMH: prior hypertension history noted
+              </div>
+            )}
+            {weightNow != null && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "#5b6b64" }}>
+                Weight: {weightNow} lbs{weightPrev != null ? ` (${weightNow - weightPrev >= 0 ? "+" : ""}${(weightNow - weightPrev).toFixed(1)} since last check-in)` : ""}
+              </div>
+            )}
           </div>
           <button onClick={onClose} style={{ border: "none", background: "none", color: "#5b6b64", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}>
             <ArrowLeft size={14} /> Close
@@ -459,6 +1059,16 @@ function PatientDetail({ patient, checkins, onClose }) {
           <GestationalRuler phase={patient.phase} weekOrDay={patient.weekOrDay} />
         </div>
       </Card>
+
+      {latestWoundPhoto && (
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<Camera size={16} />} title="Wound photo" />
+          <div style={{ fontSize: 12, color: "#5b6b64", marginTop: 6 }}>Submitted {fmtDate(latestWoundPhoto.date)}</div>
+          <a href={latestWoundPhoto.photo} target="_blank" rel="noreferrer">
+            <img src={latestWoundPhoto.photo} alt="Wound" style={{ marginTop: 10, maxWidth: "100%", borderRadius: 10, border: "1px solid #e7ece7" }} />
+          </a>
+        </Card>
+      )}
 
       {reasons.length > 0 && (
         <Card style={{ marginTop: 14 }}>
@@ -470,9 +1080,12 @@ function PatientDetail({ patient, checkins, onClose }) {
                   <span style={{ fontWeight: 600, fontSize: 13.5 }}>{r.label}</span>
                   <TierBadge tier={r.tier} />
                 </div>
-                <div style={{ fontSize: 12.5, color: "#3d4a44", marginTop: 4 }}>{r.note}</div>
+                <div style={{ fontSize: 12.5, color: "#3d4a44", marginTop: 4 }}>{r.providerNote || r.note}</div>
                 <div style={{ fontSize: 11.5, color: "#8a9791", marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
-                  <ExternalLink size={11} /> Source: {r.source}
+                  <ExternalLink size={11} /> Source:{" "}
+                  {r.url
+                    ? <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "#8a9791" }}>{r.source}</a>
+                    : r.source}
                 </div>
               </div>
             ))}
@@ -546,6 +1159,28 @@ export default function App() {
     await saveDemoData(next);
   }
 
+  async function completeEPDS({ psychHistory, epds, editingDate }) {
+    const currentCheckins = data.checkins[activePatientId] || [];
+    const nextCheckins = editingDate
+      ? currentCheckins.map((c) => (c.epds && c.epds.date === editingDate ? { ...c, epds } : c))
+      : [...currentCheckins, { date: dayISO(TODAY), epds }];
+    const next = {
+      ...data,
+      patients: psychHistory === null || psychHistory === undefined
+        ? data.patients
+        : data.patients.map((p) => (p.id === activePatientId ? { ...p, psychHistory } : p)),
+      checkins: { ...data.checkins, [activePatientId]: nextCheckins },
+    };
+    setData(next);
+    await saveDemoData(next);
+  }
+
+  async function setHtnHistory(value) {
+    const next = { ...data, patients: data.patients.map((p) => (p.id === activePatientId ? { ...p, htnHistory: value } : p)) };
+    setData(next);
+    await saveDemoData(next);
+  }
+
   if (!view) return <ViewSelect onSelect={setView} />;
 
   if (view === "patient") {
@@ -558,7 +1193,7 @@ export default function App() {
             <span key={p.id} onClick={() => setActivePatientId(p.id)} style={{ cursor: "pointer", fontWeight: p.id === activePatientId ? 700 : 400, textDecoration: p.id === activePatientId ? "underline" : "none" }}>{p.name.split(" ")[0]}</span>
           ))}
         </div>
-        <PatientView patient={patient} checkins={data.checkins[activePatientId]} onSubmitCheckin={submitCheckin} onSwitch={() => setView(null)} />
+        <PatientView patient={patient} checkins={data.checkins[activePatientId]} onSubmitCheckin={submitCheckin} onCompleteEPDS={completeEPDS} onSetHtnHistory={setHtnHistory} onSwitch={() => setView(null)} />
       </div>
     );
   }
