@@ -383,7 +383,7 @@ function seedData() {
     { id: "p1", name: "Maria Alvarez", phase: "pre-term", weekOrDay: 32, deliveryType: null, dueDate: dayISO(addDays(TODAY, 56)), htnHistory: false },
     { id: "p2", name: "Jade Whitfield", phase: "post-term", weekOrDay: 6, deliveryType: "C-section", dueDate: dayISO(addDays(TODAY, -42)), psychHistory: true },
     { id: "p3", name: "Priya Nair", phase: "pre-term", weekOrDay: 38, deliveryType: null, dueDate: dayISO(addDays(TODAY, 14)), htnHistory: true },
-    { id: "p4", name: "Samira Okafor", phase: "post-term", weekOrDay: 30, deliveryType: "Vaginal", dueDate: dayISO(addDays(TODAY, -245)) },
+    { id: "p4", name: "Samira Okafor", phase: "post-term", weekOrDay: 30, deliveryType: "Vaginal", dueDate: dayISO(addDays(TODAY, -245)), vteHistory: true },
   ];
 
   const checkins = {
@@ -482,6 +482,22 @@ function TierBadge({ tier }) {
     }}>
       {tier === "urgent" ? <AlertTriangle size={12} /> : tier === "monitor" ? <ShieldAlert size={12} /> : <CheckCircle2 size={12} />}
       {TIER_LABEL[tier]}
+    </span>
+  );
+}
+
+/* ---------- past medical history flag, surfaced on the dashboard list ----------
+   Distinct from TierBadge: these are static background risk factors (not
+   tied to today's check-in), so they get their own muted styling and a
+   clinical-rationale tooltip rather than the tier color scale.
+------------------------------------------------------------------------- */
+function PmhBadge({ label, tooltip }) {
+  return (
+    <span title={tooltip} style={{
+      display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 999,
+      fontFamily: "Inter, sans-serif", fontSize: 11, fontWeight: 600, color: "#B5566B", background: "#B5566B1a", cursor: "help"
+    }}>
+      <ShieldAlert size={10} /> {label}
     </span>
   );
 }
@@ -710,12 +726,12 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
           {trendResult && <InlineNote result={trendResult} />}
           <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
             {["swelling", "visualDisturbance", "suddenWeightGain"].map((s) => (
-              <Chip key={s} label={labelize(s)} active={symptoms.includes(s)} onClick={() => toggle(symptoms, setSymptoms, s)} />
+              <Chip key={s} label={labelize(s)} active={symptoms.includes(s)} onClick={() => toggle(symptoms, setSymptoms, s)} tooltip={SYMPTOM_TOOLTIPS[s]} />
             ))}
           </div>
           {patient.phase === "pre-term" && (
             <div style={{ marginTop: 12 }}>
-              <label style={labelStyle}>Kick count (last 2 hrs) <InfoTip text="A noticeable drop in fetal movement can be an early sign of fetal distress. Counting kicks is a simple way to catch that early, before anything else changes." /></label>
+              <label style={labelStyle}>Kick count (last 2 hrs) <InfoTip text="A noticeable drop in fetal movement can be an early sign of fetal distress. A count under 10 in 2 hours immediately flags your care team for evaluation, rather than waiting for your next scheduled check-in." /></label>
               <input value={kick} onChange={(e) => setKick(e.target.value)} type="number" style={{ ...inputStyle, width: 100 }} />
               {kickResult && <InlineNote result={kickResult} />}
             </div>
@@ -731,7 +747,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
               {["redness", "discharge", "warmth", "fever"].map((s) => (
-                <Chip key={s} label={labelize(s)} active={wound.includes(s)} onClick={() => toggle(wound, setWound, s)} />
+                <Chip key={s} label={labelize(s)} active={wound.includes(s)} onClick={() => toggle(wound, setWound, s)} tooltip={WOUND_TOOLTIPS[s]} />
               ))}
             </div>
             <div style={{ marginTop: 10 }}>
@@ -750,7 +766,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             </div>
             <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
               {["calfPain", "chestPain"].map((s) => (
-                <Chip key={s} label={labelize(s)} active={vte.includes(s)} onClick={() => toggle(vte, setVte, s)} />
+                <Chip key={s} label={labelize(s)} active={vte.includes(s)} onClick={() => toggle(vte, setVte, s)} tooltip={VTE_TOOLTIPS[s]} />
               ))}
             </div>
             {woundResult && <InlineNote result={woundResult} />}
@@ -759,7 +775,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
               <label style={labelStyle}>Other postpartum symptoms <InfoTip text="Heavy bleeding can signal postpartum hemorrhage, and burning urination can signal a UTI — both are treatable, and both are much easier to treat when caught early." /></label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {["bleeding", "burningUrination"].map((s) => (
-                  <Chip key={s} label={labelize(s)} active={postSymptoms.includes(s)} onClick={() => toggle(postSymptoms, setPostSymptoms, s)} />
+                  <Chip key={s} label={labelize(s)} active={postSymptoms.includes(s)} onClick={() => toggle(postSymptoms, setPostSymptoms, s)} tooltip={POSTPARTUM_SYMPTOM_TOOLTIPS[s]} />
                 ))}
               </div>
               {postpartumResult && <InlineNote result={postpartumResult} />}
@@ -807,7 +823,7 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             <label style={labelStyle}>Current supplements</label>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {SUPPLEMENT_OPTIONS.map((s) => (
-                <Chip key={s} label={s} active={supplements.includes(s)} onClick={() => toggle(supplements, setSupplements, s)} />
+                <Chip key={s} label={s} active={supplements.includes(s)} onClick={() => toggle(supplements, setSupplements, s)} tooltip={SUPPLEMENT_TOOLTIPS[s]} />
               ))}
             </div>
           </div>
@@ -815,16 +831,26 @@ function PatientView({ patient, checkins, onSubmitCheckin, onCompleteEPDS, onSet
             <label style={labelStyle}>Dietary restrictions</label>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {DIET_RESTRICTION_OPTIONS.map((d) => (
-                <Chip key={d} label={d} active={dietRestrictions.includes(d)} onClick={() => toggle(dietRestrictions, setDietRestrictions, d)} />
+                <Chip key={d} label={d} active={dietRestrictions.includes(d)} onClick={() => toggle(dietRestrictions, setDietRestrictions, d)} tooltip={DIET_RESTRICTION_TOOLTIPS[d]} />
               ))}
             </div>
           </div>
           <div style={{ marginTop: 12 }}>
             <label style={labelStyle}>Health status</label>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              <Chip label="Anemia" active={anemia} onClick={() => setAnemia((a) => !a)} />
+              <Chip
+                label="Anemia"
+                active={anemia}
+                onClick={() => setAnemia((a) => !a)}
+                tooltip="Flags that we should prioritize iron-rich foods and watch your iron supplementation more closely."
+              />
               {isPostTerm && (
-                <Chip label="Currently breastfeeding" active={breastfeeding} onClick={() => setBreastfeeding((b) => !b)} />
+                <Chip
+                  label="Currently breastfeeding"
+                  active={breastfeeding}
+                  onClick={() => setBreastfeeding((b) => !b)}
+                  tooltip="Breastfeeding raises your calorie, calcium, and iron needs — this changes the recommendations and reminders shown below."
+                />
               )}
             </div>
           </div>
@@ -929,15 +955,55 @@ function InlineNote({ result }) {
     </div>
   );
 }
-function Chip({ label, active, onClick }) {
+function Chip({ label, active, onClick, tooltip }) {
   return (
-    <button onClick={onClick} style={{
-      padding: "6px 12px", borderRadius: 999, fontSize: 12.5, cursor: "pointer",
+    <button onClick={onClick} title={tooltip} style={{
+      padding: "6px 12px", borderRadius: 999, fontSize: 12.5, cursor: tooltip ? "help" : "pointer",
       border: `1px solid ${active ? "#2F6E68" : "#d8e0d9"}`, background: active ? "#2F6E68" : "#fff",
       color: active ? "#fff" : "#3d4a44", fontFamily: "Inter, sans-serif"
     }}>{label}</button>
   );
 }
+
+/* ---------- per-item "why we ask" text for check-in chips ----------
+   Shown as a native hover tooltip on each chip (see Chip's `tooltip` prop).
+------------------------------------------------------------------------- */
+const SYMPTOM_TOOLTIPS = {
+  swelling: "Sudden or severe swelling of the face or hands can be a sign of pre-eclampsia, especially alongside other symptoms or a borderline blood pressure reading.",
+  visualDisturbance: "Seeing spots, blurring, or light sensitivity can reflect pre-eclampsia affecting blood flow — reported together with your blood pressure, it helps catch it earlier.",
+  suddenWeightGain: "Rapid weight gain (more than about 2 lbs in a week) often reflects fluid retention linked to pre-eclampsia rather than diet.",
+};
+const WOUND_TOOLTIPS = {
+  redness: "Redness spreading from a C-section incision is often one of the earliest visible signs of infection.",
+  discharge: "Discharge from the incision, especially if it smells unusual or looks cloudy, often signals infection needing prompt treatment.",
+  warmth: "An incision that feels warm to the touch can indicate inflammation or infection before other signs show up.",
+  fever: "A fever alongside wound symptoms raises the likelihood of infection and is treated as more urgent by your care team.",
+};
+const VTE_TOOLTIPS = {
+  calfPain: "One-sided calf pain or swelling is a classic warning sign of a deep vein blood clot (DVT), which pregnancy and postpartum both raise the risk of.",
+  chestPain: "Chest pain can mean a clot has traveled to the lungs (pulmonary embolism) — a medical emergency, which is why this always flags urgent.",
+};
+const POSTPARTUM_SYMPTOM_TOOLTIPS = {
+  bleeding: "Bleeding that increases instead of tapering off, or soaks a pad within an hour, can signal postpartum hemorrhage.",
+  burningUrination: "Burning with urination usually signals a urinary tract infection — common postpartum, and easily treated once caught.",
+};
+const SUPPLEMENT_TOOLTIPS = {
+  "Prenatal vitamin": "Covers your daily folic acid, iodine, and choline needs in one dose — the foundation the other supplement reminders below build on.",
+  "Folic acid": "ACOG recommends 600 mcg/day during pregnancy (at least 400 mcg from a prenatal vitamin) — it helps prevent neural tube birth defects of the brain and spine.",
+  "Iron": "Pregnancy needs 27 mg/day (up from 18 mg) to build the extra blood supply for you and the fetus. Your blood is checked for anemia at routine visits.",
+  "Calcium": "1,000 mg/day (1,300 mg if you're 14-18) builds the fetus's bones and teeth — needs go up again while breastfeeding.",
+  "Vitamin D": "600 IU/day works with calcium for fetal bone development. Many people don't get enough from diet and sunlight alone.",
+  "DHA/Omega-3": "Supports fetal brain development. ACOG's primary recommendation is 2-3 servings of lower-mercury fish a week rather than a supplement alone.",
+  "Iodine": "220 mcg/day is essential for healthy fetal brain development — it isn't in every prenatal vitamin, so it's worth checking your label.",
+};
+const DIET_RESTRICTION_TOOLTIPS = {
+  "Vegetarian": "Plant-based diets need extra attention to B12, iron, choline, and omega-3s, since those are mostly found in animal products.",
+  "Vegan": "Vegan diets need extra attention to B12, iron, choline, omega-3s, and sometimes calcium/vitamin D — fortified foods or supplements often help close the gap.",
+  "Gluten-free": "Some gluten-free grain substitutes are less fortified with folic acid and iron than standard wheat products, so it's worth double-checking intake.",
+  "Dairy-free": "Dairy is a primary source of calcium and vitamin D — going dairy-free means those need to come from fortified alternatives or supplements instead.",
+  "Low-sodium": "Usually reflects a separate condition, like blood pressure management, that your care team will want context on.",
+  "Diabetic diet": "Blood sugar control affects fetal growth — flagging this helps your care team coordinate with any glucose monitoring you're doing.",
+};
 function labelize(s) {
   return s.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
 }
@@ -1172,6 +1238,22 @@ function ProviderView({ patients, checkins, onSwitch, onAddPatient }) {
                 <div style={{ fontSize: 12, color: "#5b6b64", marginTop: 2 }}>
                   {r.phase === "pre-term" ? `Wk ${r.weekOrDay}` : `Day ${r.weekOrDay} PP`} {r.deliveryType ? `· ${r.deliveryType}` : ""}
                 </div>
+                {(r.htnHistory || r.vteHistory) && (
+                  <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {r.htnHistory && (
+                      <PmhBadge
+                        label="HTN hx"
+                        tooltip="Pre-existing (chronic) hypertension — raises risk of pre-eclampsia, placental abruption, and fetal growth restriction. Monitor BP trend closely even when individual readings are subthreshold."
+                      />
+                    )}
+                    {r.vteHistory && (
+                      <PmhBadge
+                        label="VTE hx"
+                        tooltip="Prior venous thromboembolism — raises risk of a recurrent clot during pregnancy and postpartum. ACOG recommends assessing for prophylactic anticoagulation."
+                      />
+                    )}
+                  </div>
+                )}
                 {r.tier !== "normal" && r.reasons.length > 0 && (
                   <div style={{ fontSize: 11.5, color: TIER_COLOR[r.tier], marginTop: 4, display: "flex", flexWrap: "wrap", gap: "3px 6px" }}>
                     {r.reasons.map((reason, i) => (
