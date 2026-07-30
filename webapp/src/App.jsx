@@ -3,7 +3,7 @@ import {
   Heart, AlertTriangle, CheckCircle2, Camera, Activity, Baby,
   ChevronRight, ArrowLeft, TrendingUp, Moon, Utensils, Stethoscope,
   ShieldAlert, ClipboardList, Users, LogOut, ExternalLink,
-  Info, BookOpen, MessageCircle, Send, HelpCircle, Dumbbell, Milk, Lock
+  Info, BookOpen, MessageCircle, Send, HelpCircle, Dumbbell, Milk, Lock, FileText
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
@@ -1669,6 +1669,135 @@ function EducationView({ onBack }) {
   );
 }
 
+/* ---------- DOCUMENTATION: what Continuum does, for patients and care teams ---------- */
+function DocsSection({ children }) {
+  return <div style={{ marginTop: 10, fontSize: 13.5, color: "#3d4a44", lineHeight: 1.6 }}>{children}</div>;
+}
+function DocsList({ items }) {
+  return (
+    <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13.5, color: "#3d4a44", lineHeight: 1.6, display: "flex", flexDirection: "column", gap: 6 }}>
+      {items.map((it, i) => <li key={i}>{it}</li>)}
+    </ul>
+  );
+}
+
+function DocsView({ onBack }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "#F4F6F1", fontFamily: "Inter, sans-serif", color: "#14231F" }}>
+      <style>{FONTS}</style>
+      <div style={{ maxWidth: 640, margin: "0 auto", padding: "20px 16px 60px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <FileText size={20} color="#2F6E68" />
+            <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600 }}>How Continuum works</span>
+          </div>
+          <button onClick={onBack} style={{ border: "none", background: "none", color: "#5b6b64", display: "flex", alignItems: "center", gap: 4, fontSize: 13, cursor: "pointer" }}>
+            <ArrowLeft size={14} /> Back
+          </button>
+        </div>
+        <p style={{ fontSize: 13.5, color: "#5b6b64", marginTop: 10, lineHeight: 1.55 }}>
+          Continuum connects pregnant and postpartum patients to their care team between visits. Patients log
+          short check-ins from home; the app screens each entry against evidence-based clinical thresholds and
+          surfaces anything that needs attention on a provider dashboard — so problems like pre-eclampsia,
+          wound infection, blood clots, postpartum depression, or hemorrhage get caught early instead of waiting
+          for the next scheduled appointment.
+        </p>
+
+        <Card style={{ marginTop: 16 }}>
+          <SectionTitle icon={<Baby size={16} />} title="Where you are: the gestational ruler" />
+          <DocsSection>
+            Every screen shows a timeline running from <strong>week 20 of pregnancy</strong> through{" "}
+            <strong>term (40 weeks)</strong> to <strong>day 90 postpartum</strong>. A dot marks the patient's
+            current position, and colored ticks mark past check-ins that were flagged Monitor or Urgent — so
+            you can see at a glance both where someone is in their pregnancy/recovery and when things came up.
+          </DocsSection>
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<HelpCircle size={16} />} title="The three-tier result system" />
+          <DocsSection>
+            Every check-in item — a blood pressure reading, a symptom, a screening score — is scored into one
+            of three tiers. The same tiers are used everywhere: on the patient's check-in, on the provider's
+            patient list, and in the visit summary.
+          </DocsSection>
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+            {["normal", "monitor", "urgent"].map((t) => (
+              <div key={t} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <TierBadge tier={t} />
+                <span style={{ fontSize: 12.5, color: "#3d4a44", lineHeight: 1.45 }}>{TIER_EXPLANATION[t]}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<Heart size={16} />} title="For patients: what a check-in covers" />
+          <DocsSection>
+            The check-in form adapts to where the patient is — some sections only appear during pregnancy,
+            others only appear postpartum after a C-section.
+          </DocsSection>
+          <DocsList items={[
+            <><strong>Blood pressure & symptoms</strong> — systolic/diastolic entry plus swelling, visual disturbance, and sudden weight gain checkboxes. Readings ≥140/90 flag for monitoring and ≥160/110 flag urgent (severe pre-eclampsia range). A single symptom won't flag a clearly normal reading, but two or more symptoms — or one symptom plus a borderline reading — flags for review even when blood pressure alone looks fine. The app also watches the trend across recent readings and flags a rising pattern even if every individual reading was subthreshold.</>,
+            <><strong>Weight</strong> — tracked alongside blood pressure since a sudden gain (roughly 2+ lbs in a week) can signal the fluid retention seen in pre-eclampsia.</>,
+            <><strong>Kick counts</strong> (pregnancy only) — fewer than 10 fetal movements in 2 hours immediately flags urgent, per standard fetal-movement guidance.</>,
+            <><strong>Wound & VTE check</strong> (postpartum after a C-section) — redness, discharge, warmth, or fever around the incision, plus a 0–10 pain scale compared against the last check-in (rising or high pain flags even without other signs), an optional wound photo for the care team to review, and calf pain/chest pain screening for blood clots (chest pain always flags urgent as a possible pulmonary embolism).</>,
+            <><strong>Other postpartum symptoms</strong> — heavy bleeding and burning urination, screened for postpartum hemorrhage and UTI.</>,
+            <><strong>Mental health screening (EPDS)</strong> — the 10-item Edinburgh Postnatal Depression Scale, prompted around postpartum days 30, 60, and 180. A total score ≥10, an elevated anxiety subscale, or any answer indicating thoughts of self-harm all flag for the care team; self-harm always shows a 988 crisis line prompt. Patients can revisit and edit past answers at any time.</>,
+            <><strong>Nutrition & supplements</strong> — current supplements, dietary restrictions, anemia/breastfeeding status, and a free-text diet description. A rule-based check flags when the diet description changes since the last check-in; patients can also ask an AI reviewer to read the description for clinical relevance, which — when used — replaces the rule-based flag rather than stacking with it. The section also surfaces tailored recommendations (e.g. iron pairing for anemia, extra calories while breastfeeding) and missing-supplement reminders, sourced from ACOG nutrition guidance.</>,
+            <><strong>Blood pressure trend chart</strong> — once there are at least two readings, a chart plots systolic/diastolic over time against the 140 mm Hg reference line.</>,
+          ]} />
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<BookOpen size={16} />} title="For patients: the Education library" />
+          <DocsSection>
+            A separate section (reachable from the check-in screen) covers five topics — Nutrition,
+            Hypertension, Postpartum Recovery, Pelvic Floor & Physical Recovery, and Breastfeeding Support.
+            Each topic shows the source ACOG FAQ text it's grounded in, a handful of common questions with
+            plain-language answers, and a chat box for asking follow-up questions. The AI assistant answers
+            only from that topic's ACOG excerpt, declines anything outside its scope or anything requiring a
+            personal diagnosis, and always credits the source it drew from.
+          </DocsSection>
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<Stethoscope size={16} />} title="For care teams: the provider dashboard" />
+          <DocsList items={[
+            <><strong>Patient list</strong> — every patient, sorted Urgent first, then Monitor, then Normal. Each row shows their week/day, delivery type, past-medical-history badges (e.g. prior hypertension or VTE — shown separately from today's tier since they're background risk, not a new event), and a short list of what's currently flagged.</>,
+            <><strong>Patient detail</strong> — the gestational ruler, intake notes, the latest wound photo (if submitted), a "why this patient is flagged" list giving the clinical-language rationale and cited source for each flagged item, and the blood pressure trend chart with both the 140 and 160 mm Hg reference lines.</>,
+            <><strong>Visit summary</strong> — a one-click, EHR-ready plain-text note compiling PMH, latest vitals, and every flagged item with its clinical rationale and source, previewed before copying to the clipboard so a provider can document a chart review without re-reading the full check-in history.</>,
+            <><strong>Add patient</strong> — an intake form capturing name, DOB, pregnancy status (week or postpartum day, delivery type), past medical history (hypertension, VTE, psychiatric history), other diagnoses, and free-text notes.</>,
+          ]} />
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<ShieldAlert size={16} />} title="Clinical basis" />
+          <DocsSection>
+            Thresholds and scoring are drawn from named clinical sources rather than invented — each flagged
+            item in the app links back to the guideline it came from:
+          </DocsSection>
+          <DocsList items={[
+            "ACOG — blood pressure staging, pre-eclampsia symptoms, and nutrition guidance",
+            "Count the Kicks / ACOG — fetal movement (kick count) guidance",
+            "Edinburgh Postnatal Depression Scale — depression/anxiety screening and scoring",
+            "American Heart Association — VTE (blood clot) warning signs",
+            "Cleveland Clinic — wound infection and postpartum symptom guidance",
+          ]} />
+        </Card>
+
+        <Card style={{ marginTop: 14 }}>
+          <SectionTitle icon={<Lock size={16} />} title="Access & data" />
+          <DocsSection>
+            The app sits behind a password-protected login. Patient and check-in data — including wound
+            photos and EPDS answers — is stored in a Postgres database rather than on-device, so a patient's
+            history is available to their care team across sessions and devices.
+          </DocsSection>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- NEW PATIENT INTAKE ---------- */
 function NewPatientPage({ onSave, onCancel }) {
   const [name, setName] = useState("");
@@ -1853,6 +1982,12 @@ function ViewSelect({ onSelect }) {
             <Stethoscope size={16} /> I'm a provider
           </button>
         </div>
+        <button
+          onClick={() => onSelect("docs")}
+          style={{ border: "none", background: "none", color: "#a9c2bb", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer", marginTop: 22, fontFamily: "Inter, sans-serif" }}
+        >
+          <FileText size={14} /> How Continuum works
+        </button>
       </div>
     </div>
   );
@@ -1960,6 +2095,8 @@ export default function App() {
   }
 
   if (!view) return <ViewSelect onSelect={setView} />;
+
+  if (view === "docs") return <DocsView onBack={() => setView(null)} />;
 
   if (view === "patient") {
     if (patientScreen === "education") {
